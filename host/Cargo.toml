@@ -1,0 +1,11 @@
+[package]
+name = "convex-hypervisor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+convex-shared = { path = "../shared" }
+goblin = { version = "0.9", default-features = false, features = ["elf32", "elf64", "endian_fd"] }
+libc = "0.2"
+rand = { version = "0.8", default-features = false }
+rand_chacha = "0.3"

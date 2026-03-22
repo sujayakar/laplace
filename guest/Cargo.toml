@@ -1,0 +1,11 @@
+[package]
+name = "convex-guest"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+convex-shared = { path = "../shared" }
+libm = "0.2"
+
+[build-dependencies]
+cc = "1"

@@ -1,0 +1,7 @@
+[package]
+name = "convex-shared"
+version = "0.1.0"
+edition = "2021"
+
+# This crate must compile for both the host (aarch64-apple-darwin) and
+# guest (aarch64-unknown-none), so it must be no_std compatible.
