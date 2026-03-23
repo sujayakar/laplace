@@ -124,6 +124,17 @@ pub fn build_dtb(
         fdt.end_node(gic).expect("end intc");
     }
 
+    // Fixed clock for PL011 (dummy — the PL011 driver requires a clock reference)
+    let clk_phandle: u32 = 2;
+    {
+        let clk = fdt.begin_node("apb-pclk").expect("begin clk");
+        fdt.property_string("compatible", "fixed-clock").expect("clk compatible");
+        fdt.property_u32("#clock-cells", 0).expect("clk cells");
+        fdt.property_u32("clock-frequency", 24_000_000).expect("clk freq");
+        fdt.property_u32("phandle", clk_phandle).expect("clk phandle");
+        fdt.end_node(clk).expect("end clk");
+    }
+
     // PL011 UART node
     {
         let uart = fdt
@@ -140,10 +151,8 @@ pub fn build_dtb(
             .expect("uart interrupt-parent");
         fdt.property_string_list("clock-names", vec!["uartclk".into(), "apb_pclk".into()])
             .expect("uart clock-names");
-        // Dummy clock phandles — Linux PL011 driver needs these but we don't
-        // have a real clock provider. Use phandle 0xFFFF as a placeholder.
-        // Actually, let's just not include clocks and rely on earlycon
-        // which bypasses the full driver.
+        fdt.property_array_u32("clocks", &[clk_phandle, clk_phandle])
+            .expect("uart clocks");
         fdt.end_node(uart).expect("end pl011");
     }
 
@@ -160,7 +169,8 @@ pub fn build_dtb(
              clocksource=arch_sys_counter \
              nohz=off \
              console=ttyAMA0 \
-             lpj=50000",
+             lpj=50000 \
+             rdinit=/init",
         )
         .expect("bootargs");
         fdt.property_string("stdout-path", &format!("/pl011@{:x}", UART_BASE))

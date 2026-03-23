@@ -98,11 +98,25 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
         );
     }
     let kernel_entry = GUEST_RAM_BASE + KERNEL_OFFSET;
-    eprintln!("Kernel loaded at GPA 0x{:x}", kernel_entry);
 
-    // Load initrd after kernel (page-aligned)
+    // Read the kernel's image_size from the ARM64 Image header (offset 0x10).
+    // This includes BSS and is larger than the file — we must not place the
+    // initrd within this region or the kernel's BSS zeroing will overwrite it.
+    let kernel_image_size = if kernel_data.len() >= 0x18 {
+        u64::from_le_bytes(kernel_data[0x10..0x18].try_into().unwrap()) as usize
+    } else {
+        kernel_data.len()
+    };
+    eprintln!(
+        "Kernel loaded at GPA 0x{:x} (file={}, image_size={})",
+        kernel_entry,
+        kernel_data.len(),
+        kernel_image_size,
+    );
+
+    // Load initrd after kernel image_size (page-aligned), not after file size
     let (initrd_start, initrd_end) = if let Some(ref initrd) = initrd_data {
-        let initrd_offset = page_align(kernel_load_offset + kernel_data.len());
+        let initrd_offset = page_align(kernel_load_offset + kernel_image_size);
         assert!(
             initrd_offset + initrd.len() < ram_size - DTB_MAX_SIZE,
             "Initrd too large"
@@ -347,10 +361,18 @@ fn run_linux_vcpu_loop(
                                 }
                             }
                         } else {
-                            eprintln!("Unknown {}: x0=0x{:x}", if is_smc { "SMC" } else { "HVC" }, x0);
+                            // Unknown SMCCC call — return NOT_SUPPORTED (-1 as i32,
+                            // sign-extended). Most SMCCC callers check for this.
+                            static UNKNOWN_HVC_LOGGED: std::sync::atomic::AtomicU64 =
+                                std::sync::atomic::AtomicU64::new(0);
+                            let prev = UNKNOWN_HVC_LOGGED
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if prev < 10 {
+                                eprintln!("Unknown {}: x0=0x{:x}", if is_smc { "SMC" } else { "HVC" }, x0);
+                            }
                             unsafe {
                                 check_hv(
-                                    hvf::hv_vcpu_set_reg(vcpu, hvf::HV_REG_X0, u64::MAX),
+                                    hvf::hv_vcpu_set_reg(vcpu, hvf::HV_REG_X0, (-1i32) as u64),
                                     "set x0 err",
                                 );
                             }

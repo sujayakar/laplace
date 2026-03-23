@@ -1,7 +1,7 @@
 [workspace]
 members = ["spike", "host", "shared"]
-exclude = ["guest"]
+exclude = ["guest", "init"]
 resolver = "2"
 
-# guest is built separately with --target aarch64-unknown-none, not part of the
-# default workspace build (different target triple).
+# guest and init are built separately with different target triples
+# (aarch64-unknown-none and aarch64-unknown-linux-musl respectively).

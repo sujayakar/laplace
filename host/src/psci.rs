@@ -78,15 +78,26 @@ pub fn handle_psci(func_id: u32, arg1: u64) -> Option<PsciResult> {
             Some(PsciResult::Return((1 << 16) | 2))
         }
         SMCCC_ARCH_FEATURES => {
-            // Return "supported" for known features, "not supported" otherwise
-            Some(PsciResult::Return(PSCI_SUCCESS as u64))
+            // Check what feature is being queried (in arg1/x1)
+            let feature = arg1 as u32;
+            match feature {
+                SMCCC_ARCH_WORKAROUND_1 | SMCCC_ARCH_WORKAROUND_2 | 0x8000_3FFF => {
+                    // Spectre workarounds: return NOT_REQUIRED (1)
+                    // This tells the kernel it doesn't need to use HVC-based mitigations
+                    Some(PsciResult::Return(1)) // SMCCC_RET_NOT_REQUIRED
+                }
+                _ => {
+                    // Unknown feature: return NOT_SUPPORTED
+                    Some(PsciResult::Return(PSCI_NOT_SUPPORTED as u64))
+                }
+            }
         }
         SMCCC_ARCH_SOC_ID => {
             // SOC ID not available
             Some(PsciResult::Return(PSCI_NOT_SUPPORTED as u64))
         }
-        SMCCC_ARCH_WORKAROUND_1 | SMCCC_ARCH_WORKAROUND_2 => {
-            // Not needed in a VM — return "not required"
+        SMCCC_ARCH_WORKAROUND_1 | SMCCC_ARCH_WORKAROUND_2 | 0x8000_3FFF => {
+            // Spectre mitigations — not needed in a VM, return "not required"
             Some(PsciResult::Return(PSCI_NOT_SUPPORTED as u64))
         }
 

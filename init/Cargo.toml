@@ -1,0 +1,12 @@
+[package]
+name = "convex-init"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[profile.release]
+opt-level = "s"    # optimize for size
+lto = true
+strip = true
+panic = "abort"

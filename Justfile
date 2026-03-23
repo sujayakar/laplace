@@ -43,9 +43,25 @@ demo: guest (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     @echo "  Demo complete!"
     @echo "═══════════════════════════════════════════════════"
 
-# Boot a Linux kernel in the VM
+init_bin := "init/target/aarch64-unknown-linux-musl/release/convex-init"
+initramfs := "/tmp/hvf-initramfs.cpio"
+linux_kernel := "kernel/Image-arm64"
+
+# Boot a Linux kernel in the VM (kernel only, no initramfs)
 boot-linux kernel *args: (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     {{host_bin}} boot-linux {{kernel}} {{args}}
+
+# Build the init binary (PID 1 for the Linux VM)
+init:
+    cd init && cargo build --release
+
+# Build initramfs from the init binary
+initramfs: init
+    ./scripts/mkinitramfs.sh {{init_bin}} {{initramfs}}
+
+# Boot Linux with initramfs — the full M9c demo
+boot: initramfs (_build-and-sign "convex-hypervisor" "convex-hypervisor")
+    {{host_bin}} boot-linux {{linux_kernel}} --initrd {{initramfs}}
 
 # Build the guest (no_std aarch64 binary)
 guest:
