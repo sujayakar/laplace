@@ -26,76 +26,17 @@ const KERNEL_OFFSET: u64 = 0x8_0000;
 /// DTB is placed near the top of RAM (last 2 MiB)
 const DTB_MAX_SIZE: usize = 2 * 1024 * 1024;
 
-/// Mailbox: 64 KiB at a fixed GPA **outside** the RAM region.
-/// Placed below RAM so the kernel doesn't include it in its memory map,
-/// allowing userspace to access it via /dev/mem without STRICT_DEVMEM blocking.
-/// Must match MAILBOX_GPA in init/src/main.rs.
-pub const LINUX_MAILBOX_GPA: u64 = 0x3FFF_0000;
-pub const LINUX_MAILBOX_SIZE: usize = 64 * 1024;
-
-/// Allocate and map the mailbox page into the VM at LINUX_MAILBOX_GPA.
-/// Returns the host pointer to the mailbox memory.
-fn setup_mailbox() -> *mut u8 {
-    let mailbox_mem = alloc_pages(LINUX_MAILBOX_SIZE);
-    unsafe {
-        check_hv(
-            hvf::hv_vm_map(
-                mailbox_mem,
-                LINUX_MAILBOX_GPA,
-                LINUX_MAILBOX_SIZE,
-                hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE,
-            ),
-            "hv_vm_map mailbox",
-        );
-    }
-    mailbox_mem
+/// Result of loading a kernel + initrd + DTB into guest memory.
+struct LoadedKernel {
+    mem: *mut u8,
+    ram_size: usize,
+    kernel_entry: u64,
+    dtb_addr: u64,
 }
 
-/// Parse the MMIO access details from a data abort syndrome (ESR_EL2).
-/// EC=0x24 (data abort from lower EL) is expected.
-struct MmioAccess {
-    /// Guest physical address of the access
-    addr: u64,
-    /// true = write, false = read
-    is_write: bool,
-    /// Transfer size in bytes (1, 2, 4, 8)
-    len: usize,
-    /// Destination/source register number (Rt)
-    reg: u32,
-    /// Sign extend? (only for reads)
-    #[allow(dead_code)]
-    sign_extend: bool,
-}
-
-fn decode_data_abort(syndrome: u64, ipa: u64) -> Option<MmioAccess> {
-    // ISV (Instruction Syndrome Valid) must be set for us to decode
-    let isv = (syndrome >> 24) & 1;
-    if isv == 0 {
-        eprintln!(
-            "MMIO data abort without ISV: syndrome=0x{:x}, IPA=0x{:x}",
-            syndrome, ipa
-        );
-        return None;
-    }
-
-    let sas = (syndrome >> 22) & 3; // Access size: 0=byte, 1=halfword, 2=word, 3=dword
-    let sse = (syndrome >> 21) & 1; // Sign extend
-    let srt = (syndrome >> 16) & 0x1f; // Register transfer
-    let wnr = (syndrome >> 6) & 1; // Write not Read
-
-    let len = 1usize << sas;
-
-    Some(MmioAccess {
-        addr: ipa,
-        is_write: wnr != 0,
-        len,
-        reg: srt as u32,
-        sign_extend: sse != 0,
-    })
-}
-
-/// Boot a Linux kernel.
-pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
+/// Load kernel image, optional initrd, and generated DTB into a freshly
+/// allocated guest memory region.
+fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>) -> LoadedKernel {
     let kernel_data = std::fs::read(kernel_path)
         .unwrap_or_else(|e| panic!("Failed to read kernel: {}", e));
     eprintln!("Kernel image: {} bytes", kernel_data.len());
@@ -170,6 +111,102 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
         dtb_data.len()
     );
 
+    LoadedKernel {
+        mem,
+        ram_size,
+        kernel_entry,
+        dtb_addr,
+    }
+}
+
+/// Spawn a watchdog thread that periodically forces VM exits so we can
+/// check status and inject timer interrupts.
+fn spawn_watchdog(vcpu: u64, duration_secs: u32) -> std::thread::JoinHandle<()> {
+    let iterations = (duration_secs as u64) * 10; // 100ms per iteration
+    std::thread::spawn(move || {
+        for _ in 0..iterations {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            unsafe {
+                let mut vcpus = [vcpu];
+                hvf::hv_vcpus_exit(vcpus.as_mut_ptr(), 1);
+            }
+        }
+    })
+}
+
+/// Mailbox: 64 KiB at a fixed GPA **outside** the RAM region.
+/// Placed below RAM so the kernel doesn't include it in its memory map,
+/// allowing userspace to access it via /dev/mem without STRICT_DEVMEM blocking.
+/// Must match MAILBOX_GPA in init/src/main.rs.
+pub const LINUX_MAILBOX_GPA: u64 = 0x3FFF_0000;
+pub const LINUX_MAILBOX_SIZE: usize = 64 * 1024;
+
+/// Allocate and map the mailbox page into the VM at LINUX_MAILBOX_GPA.
+/// Returns the host pointer to the mailbox memory.
+fn setup_mailbox() -> *mut u8 {
+    let mailbox_mem = alloc_pages(LINUX_MAILBOX_SIZE);
+    unsafe {
+        check_hv(
+            hvf::hv_vm_map(
+                mailbox_mem,
+                LINUX_MAILBOX_GPA,
+                LINUX_MAILBOX_SIZE,
+                hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE,
+            ),
+            "hv_vm_map mailbox",
+        );
+    }
+    mailbox_mem
+}
+
+/// Parse the MMIO access details from a data abort syndrome (ESR_EL2).
+/// EC=0x24 (data abort from lower EL) is expected.
+struct MmioAccess {
+    /// Guest physical address of the access
+    addr: u64,
+    /// true = write, false = read
+    is_write: bool,
+    /// Transfer size in bytes (1, 2, 4, 8)
+    len: usize,
+    /// Destination/source register number (Rt)
+    reg: u32,
+    /// Sign extend? (only for reads)
+    #[allow(dead_code)]
+    sign_extend: bool,
+}
+
+fn decode_data_abort(syndrome: u64, ipa: u64) -> Option<MmioAccess> {
+    // ISV (Instruction Syndrome Valid) must be set for us to decode
+    let isv = (syndrome >> 24) & 1;
+    if isv == 0 {
+        eprintln!(
+            "MMIO data abort without ISV: syndrome=0x{:x}, IPA=0x{:x}",
+            syndrome, ipa
+        );
+        return None;
+    }
+
+    let sas = (syndrome >> 22) & 3; // Access size: 0=byte, 1=halfword, 2=word, 3=dword
+    let sse = (syndrome >> 21) & 1; // Sign extend
+    let srt = (syndrome >> 16) & 0x1f; // Register transfer
+    let wnr = (syndrome >> 6) & 1; // Write not Read
+
+    let len = 1usize << sas;
+
+    Some(MmioAccess {
+        addr: ipa,
+        is_write: wnr != 0,
+        len,
+        reg: srt as u32,
+        sign_extend: sse != 0,
+    })
+}
+
+/// Boot a Linux kernel.
+pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
+    let loaded = load_kernel_and_initrd(kernel_path, initrd_path);
+    let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr } = loaded;
+
     // Create VM
     unsafe {
         check_hv(hvf::hv_vm_create(ptr::null()), "hv_vm_create");
@@ -211,18 +248,7 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
 
     eprintln!("Starting Linux kernel...\n");
 
-    // Spawn a watchdog thread that periodically forces VM exits so we can
-    // check status and inject timer interrupts if needed.
-    let vcpu_copy = vcpu;
-    let watchdog = std::thread::spawn(move || {
-        for _ in 0..100 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            unsafe {
-                let mut vcpus = [vcpu_copy];
-                hvf::hv_vcpus_exit(vcpus.as_mut_ptr(), 1);
-            }
-        }
-    });
+    let watchdog = spawn_watchdog(vcpu, 10);
 
     // Run the vCPU loop
     let result = run_linux_vcpu_loop(vcpu, exit_ptr, mem, ram_size, &uart, &mut vtimer, None);
@@ -276,48 +302,8 @@ pub fn cmd_snapshot_linux(
     initrd_path: Option<&Path>,
     template_dir: &Path,
 ) {
-    let kernel_data = std::fs::read(kernel_path)
-        .unwrap_or_else(|e| panic!("Failed to read kernel: {}", e));
-    eprintln!("Kernel image: {} bytes", kernel_data.len());
-
-    let initrd_data = initrd_path.map(|p| {
-        let data = std::fs::read(p).unwrap_or_else(|e| panic!("Failed to read initrd: {}", e));
-        eprintln!("Initrd: {} bytes", data.len());
-        data
-    });
-
-    let ram_size = page_align(GUEST_RAM_SIZE as usize);
-    let mem = alloc_pages(ram_size);
-
-    // Load kernel
-    let kernel_load_offset = KERNEL_OFFSET as usize;
-    let kernel_image_size = if kernel_data.len() >= 0x18 {
-        u64::from_le_bytes(kernel_data[0x10..0x18].try_into().unwrap()) as usize
-    } else {
-        kernel_data.len()
-    };
-    assert!(kernel_load_offset + kernel_data.len() < ram_size);
-    unsafe {
-        ptr::copy_nonoverlapping(kernel_data.as_ptr(), mem.add(kernel_load_offset), kernel_data.len());
-    }
-    let kernel_entry = GUEST_RAM_BASE + KERNEL_OFFSET;
-
-    // Load initrd
-    let (initrd_start, initrd_end) = if let Some(ref initrd) = initrd_data {
-        let initrd_offset = page_align(kernel_load_offset + kernel_image_size);
-        assert!(initrd_offset + initrd.len() < ram_size - DTB_MAX_SIZE);
-        unsafe { ptr::copy_nonoverlapping(initrd.as_ptr(), mem.add(initrd_offset), initrd.len()); }
-        let start = GUEST_RAM_BASE + initrd_offset as u64;
-        (Some(start), Some(start + initrd.len() as u64))
-    } else {
-        (None, None)
-    };
-
-    // Generate and place DTB
-    let dtb_data = dtb::build_dtb(GUEST_RAM_BASE, GUEST_RAM_SIZE, initrd_start, initrd_end);
-    let dtb_offset = ram_size - page_align(dtb_data.len());
-    unsafe { ptr::copy_nonoverlapping(dtb_data.as_ptr(), mem.add(dtb_offset), dtb_data.len()); }
-    let dtb_addr = GUEST_RAM_BASE + dtb_offset as u64;
+    let loaded = load_kernel_and_initrd(kernel_path, initrd_path);
+    let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr } = loaded;
 
     // Create VM, GIC, vCPU
     unsafe { check_hv(hvf::hv_vm_create(ptr::null()), "hv_vm_create"); }
@@ -340,17 +326,7 @@ pub fn cmd_snapshot_linux(
 
     eprintln!("Booting Linux to snapshot point...\n");
 
-    // Watchdog for timer delivery during boot
-    let vcpu_copy = vcpu;
-    let watchdog = std::thread::spawn(move || {
-        for _ in 0..300 { // 30 seconds max
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            unsafe {
-                let mut vcpus = [vcpu_copy];
-                hvf::hv_vcpus_exit(vcpus.as_mut_ptr(), 1);
-            }
-        }
-    });
+    let watchdog = spawn_watchdog(vcpu, 30);
 
     let result = run_linux_vcpu_loop(
         vcpu, exit_ptr, mem, ram_size, &uart, &mut vtimer,
@@ -460,17 +436,7 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
     let uart = Pl011::new(dtb::UART_BASE);
     let mut vtimer = VirtualTimer::new();
 
-    // Watchdog to force periodic exits (needed for timer interrupt delivery)
-    let vcpu_copy = vcpu;
-    let watchdog = std::thread::spawn(move || {
-        for _ in 0..100 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            unsafe {
-                let mut vcpus = [vcpu_copy];
-                hvf::hv_vcpus_exit(vcpus.as_mut_ptr(), 1);
-            }
-        }
-    });
+    let watchdog = spawn_watchdog(vcpu, 10);
 
     // Run to completion
     let result = run_linux_vcpu_loop(vcpu, exit_ptr, mem, ram_size, &uart, &mut vtimer, None);
@@ -579,8 +545,8 @@ pub enum VmExitReason {
 fn run_linux_vcpu_loop(
     vcpu: u64,
     exit_ptr: *const hvf::HvVcpuExit,
-    guest_mem: *mut u8,
-    mem_size: usize,
+    _guest_mem: *mut u8,
+    _mem_size: usize,
     uart: &Pl011,
     vtimer: &mut VirtualTimer,
     mailbox_ptr: Option<*const u8>,
@@ -702,7 +668,7 @@ fn run_linux_vcpu_loop(
                     0x24 => {
                         mmio_count += 1;
                         if let Some(access) = decode_data_abort(syndrome, ipa) {
-                            handle_mmio(vcpu, &access, guest_mem, uart, vtimer);
+                            handle_mmio(vcpu, &access, uart);
                         } else {
                             let pc = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_PC) };
                             eprintln!(
@@ -810,9 +776,7 @@ fn run_linux_vcpu_loop(
 fn handle_mmio(
     vcpu: u64,
     access: &MmioAccess,
-    _guest_mem: *mut u8,
     uart: &Pl011,
-    _vtimer: &mut VirtualTimer,
 ) {
     if uart.contains(access.addr) {
         let offset = access.addr - uart.base_addr;

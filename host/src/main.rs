@@ -947,7 +947,10 @@ mod tests {
                 }
                 g
             },
-            sys_regs: vec![0xAAAA, 0xBBBB, 0xCCCC],
+            sys_regs: {
+                let len = hvf::SNAPSHOT_SYS_REGS.len();
+                (0..len).map(|i| (i as u64) * 0x1111 + 0xAAAA).collect()
+            },
             simd: {
                 let mut s = [[0u8; 16]; 32];
                 s[0] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];

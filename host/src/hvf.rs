@@ -59,32 +59,14 @@ pub const HV_REG_CPSR: u32 = 34;
 // SIMD/FP register IDs (sequential enum)
 pub const HV_SIMD_FP_REG_Q0: u32 = 0;
 
-// System register IDs (from hv_vcpu_types.h)
+// System register IDs (from hv_vcpu_types.h, sorted by hex value)
+pub const HV_SYS_REG_MDSCR_EL1: u16 = 0x8012;
+pub const HV_SYS_REG_MPIDR_EL1: u16 = 0xc005;
 pub const HV_SYS_REG_SCTLR_EL1: u16 = 0xc080;
 pub const HV_SYS_REG_CPACR_EL1: u16 = 0xc082;
 pub const HV_SYS_REG_TTBR0_EL1: u16 = 0xc100;
 pub const HV_SYS_REG_TTBR1_EL1: u16 = 0xc101;
 pub const HV_SYS_REG_TCR_EL1: u16 = 0xc102;
-pub const HV_SYS_REG_SPSR_EL1: u16 = 0xc200;
-pub const HV_SYS_REG_ELR_EL1: u16 = 0xc201;
-pub const HV_SYS_REG_SP_EL0: u16 = 0xc208;
-pub const HV_SYS_REG_ESR_EL1: u16 = 0xc290;
-pub const HV_SYS_REG_FAR_EL1: u16 = 0xc300;
-pub const HV_SYS_REG_MAIR_EL1: u16 = 0xc510;
-pub const HV_SYS_REG_VBAR_EL1: u16 = 0xc600;
-pub const HV_SYS_REG_TPIDR_EL1: u16 = 0xc684;
-pub const HV_SYS_REG_CNTKCTL_EL1: u16 = 0xc708;
-pub const HV_SYS_REG_TPIDR_EL0: u16 = 0xde82;
-pub const HV_SYS_REG_TPIDRRO_EL0: u16 = 0xde83;
-pub const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
-pub const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
-pub const HV_SYS_REG_SP_EL1: u16 = 0xe208;
-pub const HV_SYS_REG_MPIDR_EL1: u16 = 0xc005;
-
-// Interrupt types
-pub const HV_INTERRUPT_TYPE_IRQ: u32 = 0;
-
-// PAC key registers
 pub const HV_SYS_REG_APIAKEYLO_EL1: u16 = 0xc108;
 pub const HV_SYS_REG_APIAKEYHI_EL1: u16 = 0xc109;
 pub const HV_SYS_REG_APIBKEYLO_EL1: u16 = 0xc10a;
@@ -95,15 +77,29 @@ pub const HV_SYS_REG_APDBKEYLO_EL1: u16 = 0xc112;
 pub const HV_SYS_REG_APDBKEYHI_EL1: u16 = 0xc113;
 pub const HV_SYS_REG_APGAKEYLO_EL1: u16 = 0xc118;
 pub const HV_SYS_REG_APGAKEYHI_EL1: u16 = 0xc119;
-
-// Additional system registers for snapshot
+pub const HV_SYS_REG_SPSR_EL1: u16 = 0xc200;
+pub const HV_SYS_REG_ELR_EL1: u16 = 0xc201;
+pub const HV_SYS_REG_SP_EL0: u16 = 0xc208;
 pub const HV_SYS_REG_AFSR0_EL1: u16 = 0xc288;
 pub const HV_SYS_REG_AFSR1_EL1: u16 = 0xc289;
+pub const HV_SYS_REG_ESR_EL1: u16 = 0xc290;
+pub const HV_SYS_REG_FAR_EL1: u16 = 0xc300;
 pub const HV_SYS_REG_PAR_EL1: u16 = 0xc3a0;
+pub const HV_SYS_REG_MAIR_EL1: u16 = 0xc510;
 pub const HV_SYS_REG_AMAIR_EL1: u16 = 0xc518;
+pub const HV_SYS_REG_VBAR_EL1: u16 = 0xc600;
 pub const HV_SYS_REG_CONTEXTIDR_EL1: u16 = 0xc681;
+pub const HV_SYS_REG_TPIDR_EL1: u16 = 0xc684;
+pub const HV_SYS_REG_CNTKCTL_EL1: u16 = 0xc708;
 pub const HV_SYS_REG_CSSELR_EL1: u16 = 0xd000;
-pub const HV_SYS_REG_MDSCR_EL1: u16 = 0x8012;
+pub const HV_SYS_REG_TPIDR_EL0: u16 = 0xde82;
+pub const HV_SYS_REG_TPIDRRO_EL0: u16 = 0xde83;
+pub const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
+pub const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
+pub const HV_SYS_REG_SP_EL1: u16 = 0xe208;
+
+// Interrupt types
+pub const HV_INTERRUPT_TYPE_IRQ: u32 = 0;
 
 /// System registers we snapshot/restore for a vCPU.
 pub const SNAPSHOT_SYS_REGS: &[u16] = &[

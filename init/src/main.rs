@@ -1,11 +1,12 @@
 //! Minimal init process (PID 1) for our Linux VM.
 //!
 //! Lifecycle:
-//! 1. Mount devtmpfs, open /dev/kmsg for output
-//! 2. Signal HC_READY via HVC → host snapshots the VM
-//! 3. On resume (after fork), read message from mailbox page
-//! 4. Print the message to /dev/kmsg
-//! 5. Power off via reboot(POWER_OFF)
+//! 1. Mount devtmpfs + procfs, open /dev/kmsg for output
+//! 2. Map the mailbox page via /dev/mem (at MAILBOX_GPA)
+//! 3. Write READY_MAGIC to the mailbox, then spin until the host overwrites it
+//! 4. Host detects READY via periodic forced VM exits, snapshots the VM
+//! 5. On fork-resume, the mailbox contains per-fork data — read and print it
+//! 6. Power off via reboot(POWER_OFF)
 
 #![no_std]
 #![no_main]
