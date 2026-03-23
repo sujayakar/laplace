@@ -191,8 +191,18 @@ pub extern "C" fn _start() -> ! {
     }
 
     // --- We are now running in a forked VM ---
-    let msg = read_mailbox_str(mailbox);
 
+    // Try to exec /runner (e.g. QuickJS runner). If present, it takes over
+    // and handles the mailbox content. If not, fall back to printing as text.
+    unsafe {
+        let path = b"/runner\0";
+        let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
+        let envp: [*const u8; 1] = [core::ptr::null()];
+        syscall3(221, path.as_ptr() as u64, argv.as_ptr() as u64, envp.as_ptr() as u64);
+        // If we get here, execve failed — fall through to text output
+    }
+
+    let msg = read_mailbox_str(mailbox);
     if msg.is_empty() || msg == READY_MAGIC {
         write_all(out_fd, b"[convex-init] no message in mailbox\n");
     } else {

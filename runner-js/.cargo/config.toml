@@ -1,0 +1,13 @@
+[build]
+target = "aarch64-unknown-linux-musl"
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+# Disable PAC (-pauth) to avoid SIGILL with HVF's PAC implementation.
+# Disable BTI (-bti) for compatibility. Use generic CPU to avoid
+# Apple-Silicon-specific instructions.
+rustflags = [
+    "-C", "target-feature=+crt-static,-pauth,-bti",
+    "-C", "link-self-contained=yes",
+    "-C", "target-cpu=generic",
+]

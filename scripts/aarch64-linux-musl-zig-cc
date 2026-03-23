@@ -1,0 +1,11 @@
+#!/bin/sh
+# Wrapper for zig as a C cross-compiler for aarch64-linux-musl.
+# Filters out --target flags and adds -mcpu=generic to avoid PAC/BTI.
+args=""
+for arg in "$@"; do
+    case "$arg" in
+        --target=*) ;; # skip — we set our own target
+        *) args="$args $arg" ;;
+    esac
+done
+exec zig cc -target aarch64-linux-musl -mcpu=generic $args

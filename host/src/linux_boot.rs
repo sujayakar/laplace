@@ -246,8 +246,15 @@ fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>) -> Loa
     } else {
         kernel_data.len()
     };
-    // Patch timer counter reads in the kernel for deterministic time
-    let patched = patch_timer_reads(mem, kernel_load_offset, kernel_data.len());
+    // Binary-patch timer reads for deterministic time.
+    // Disabled by default: each patched read becomes an HVC exit (~1-2μs),
+    // making boot ~30x slower. Enable for determinism testing.
+    // On M4+ or Linux/KVM, use CNTHCTL_EL2 trapping instead (zero overhead).
+    let patched = if std::env::var("CONVEX_PATCH_TIMER").is_ok() {
+        patch_timer_reads(mem, kernel_load_offset, kernel_data.len())
+    } else {
+        0
+    };
     eprintln!(
         "Kernel loaded at GPA 0x{:x} (file={}, image_size={}, patched {} timer reads)",
         kernel_entry,

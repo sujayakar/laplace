@@ -1,6 +1,6 @@
 [workspace]
 members = ["spike", "host", "shared"]
-exclude = ["guest", "init"]
+exclude = ["guest", "init", "runner-js"]
 resolver = "2"
 
 # guest and init are built separately with different target triples
