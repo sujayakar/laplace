@@ -1,22 +1,17 @@
 //! V8 JS runner for the Linux VM.
 //!
 //! Lifecycle:
-//! 1. Mount devtmpfs/proc, redirect output to /dev/kmsg
+//! 1. Mount devtmpfs/proc if needed, redirect output to /dev/kmsg
 //! 2. Initialize V8 (platform, isolate, context, console.log)
-//! 3. Write READY to mailbox → host snapshots
-//! 4. Spin until mailbox changes (fork-resume writes JS code)
-//! 5. Evaluate JS, print result, power off
+//! 3. Block on read(stdin) for JS code (init sends via pipe)
+//! 4. Evaluate JS, print result, exit
 //!
-//! V8 initialization (step 2) happens BEFORE the snapshot, so it's
-//! amortized across all forks. Forks skip directly to step 4.
+//! V8 init happens BEFORE snapshot (amortized). After fork, the init
+//! sends JS via the pipe and V8 just evals — no V8 init needed.
 
 use std::ffi::CString;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
-
-const MAILBOX_GPA: u64 = 0x3FFF_0000;
-const MAILBOX_SIZE: usize = 64 * 1024;
-const READY_MAGIC: &[u8] = b"CONVEX_READY";
 
 fn main() {
     mount_if_needed("devtmpfs", "/dev", "devtmpfs");
@@ -30,10 +25,6 @@ fn main() {
     }
 
     eprintln!("[runner-v8] V8 runner starting");
-
-    // Check if JS was passed via argv (fork path — init already read mailbox)
-    let args: Vec<String> = std::env::args().collect();
-    let js_from_argv = if args.len() > 1 { Some(args[1..].join(" ")) } else { None };
 
     // Initialize V8
     eprintln!("[runner-v8] initializing V8...");
@@ -56,37 +47,18 @@ fn main() {
     console_obj.set(scope, log_key.into(), log_fn.into());
     global.set(scope, console_key.into(), console_obj.into());
 
-    eprintln!("[runner-v8] V8 ready");
+    eprintln!("[runner-v8] V8 ready, reading JS from stdin...");
 
-    // Get JS code
-    let js_code = if let Some(code) = js_from_argv {
-        // Fork path: JS was passed as argv[1] by init
-        code
-    } else {
-        // Snapshot path: write READY, spin until host writes JS code
-        // Map mailbox and write READY
-        if let Some(mailbox) = map_mailbox_rw() {
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    READY_MAGIC.as_ptr(), mailbox, READY_MAGIC.len(),
-                );
-                *mailbox.add(READY_MAGIC.len()) = 0;
-            }
-            eprintln!("[runner-v8] READY (waiting for JS in mailbox)");
+    // Read JS from stdin (init sends it via pipe after fork-resume)
+    let mut js_code = String::new();
+    std::io::stdin().read_to_string(&mut js_code).unwrap_or(0);
 
-            // Spin until mailbox content changes.
-            // After fork-restore, the host replaces the mailbox page.
-            // The stale mmap may SIGBUS, so we re-mmap after detecting change.
-            // Spin with fresh mmap each iteration to survive CoW fork
-            let code = spin_for_mailbox_change();
-            code
-        } else {
-            // Can't access mailbox — use default
-            "console.log('Hello from V8!', 1+2)".to_string()
-        }
-    };
+    if js_code.is_empty() {
+        eprintln!("[runner-v8] no JS received on stdin");
+        power_off();
+    }
 
-    eprintln!("[runner-v8] eval: {}", js_code);
+    eprintln!("[runner-v8] eval: {}", js_code.trim());
 
     let code = v8::String::new(scope, &js_code).unwrap();
     match v8::Script::compile(scope, code, None) {
@@ -120,45 +92,6 @@ fn console_log_callback(
     }
     let _ = writeln!(std::io::stdout(), "{}", parts.join(" "));
     let _ = std::io::stdout().flush();
-}
-
-fn spin_for_mailbox_change() -> String {
-    loop {
-        let fresh = map_mailbox_rw();
-        if let Some(ptr) = fresh {
-            let first = unsafe { std::ptr::read_volatile(ptr) };
-            if first != READY_MAGIC[0] {
-                let code = read_mailbox_str(ptr as *const u8).to_string();
-                return code;
-            }
-            unsafe { libc::munmap(ptr as *mut libc::c_void, MAILBOX_SIZE); }
-        }
-        std::hint::spin_loop();
-    }
-}
-
-fn map_mailbox_rw() -> Option<*mut u8> {
-    let path = CString::new("/dev/mem").ok()?;
-    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR) };
-    if fd < 0 { return None; }
-    let ptr = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(), MAILBOX_SIZE,
-            libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED,
-            fd, MAILBOX_GPA as libc::off_t,
-        )
-    };
-    unsafe { libc::close(fd); }
-    if ptr == libc::MAP_FAILED { return None; }
-    Some(ptr as *mut u8)
-}
-
-fn read_mailbox_str(mailbox: *const u8) -> &'static str {
-    let mut len = 0;
-    unsafe {
-        while len < MAILBOX_SIZE && *mailbox.add(len) != 0 { len += 1; }
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(mailbox, len))
-    }
 }
 
 fn mount_if_needed(source: &str, target: &str, fstype: &str) {
