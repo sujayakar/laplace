@@ -29,11 +29,12 @@ fn main() {
     eprintln!("[runner-v8] V8 runner starting");
 
     // Get JS code: try mailbox first, then cmdline, then default
+    eprintln!("[runner-v8] getting JS code...");
     let js_code = get_js_code();
     eprintln!("[runner-v8] eval: {}", js_code);
 
     // Initialize V8
-    eprintln!("[runner-v8] initializing V8...");
+    eprintln!("[runner-v8] initializing V8 platform...");
     let platform = v8::new_default_platform(0, false).make_shared();
     v8::V8::initialize_platform(platform);
     v8::V8::initialize();
@@ -80,14 +81,14 @@ fn main() {
 }
 
 fn get_js_code() -> String {
-    // Try mailbox (if /dev/mem is available and mailbox has non-READY content)
-    if let Some(code) = try_read_mailbox() {
-        if !code.is_empty() && !code.starts_with("CONVEX_READY") {
-            return code;
-        }
+    // Check argv first (init passes JS code as argv[1] if available)
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        return args[1..].join(" ");
     }
 
     // Try kernel command line: look for convex.js=...
+    eprintln!("[runner-v8] trying cmdline...");
     if let Ok(cmdline) = std::fs::read_to_string("/proc/cmdline") {
         for param in cmdline.split_whitespace() {
             if let Some(js) = param.strip_prefix("convex.js=") {
@@ -97,6 +98,7 @@ fn get_js_code() -> String {
     }
 
     // Default test expression
+    eprintln!("[runner-v8] using default JS");
     "console.log('Hello from V8 in a deterministic VM!', 1+2)".to_string()
 }
 
