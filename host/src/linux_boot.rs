@@ -552,6 +552,18 @@ pub fn cmd_snapshot_linux(
     // GIC state
     std::fs::write(template_dir.join("gic.state"), &gic_state).expect("write gic.state");
 
+    // Save ICC (GIC CPU interface) registers
+    let mut icc_data = Vec::new();
+    for &reg_id in hvf::ICC_REGS {
+        let mut val: u64 = 0;
+        unsafe {
+            check_hv(hvf::hv_gic_get_icc_reg(vcpu, reg_id, &mut val), "get ICC reg");
+        }
+        icc_data.extend_from_slice(&val.to_le_bytes());
+    }
+    std::fs::write(template_dir.join("icc.state"), &icc_data).expect("write icc.state");
+    eprintln!("ICC state: {} bytes ({} registers)", icc_data.len(), hvf::ICC_REGS.len());
+
     // Save vtimer offset and current mach_absolute_time for timer continuity
     let vtimer_offset = unsafe {
         let mut offset: u64 = 0;
@@ -612,8 +624,18 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
             hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE), "hv_vm_map mailbox fork");
     }
 
-    // Restore GIC state (required for timer PPI 27 routing)
+    // Create GIC (must exist before vCPU and before set_state)
     setup_gic();
+
+    // Create vCPU (must exist before GIC set_state per Apple docs)
+    let mut vcpu: u64 = 0;
+    let mut exit_ptr: *const hvf::HvVcpuExit = ptr::null();
+    unsafe {
+        check_hv(hvf::hv_vcpu_create(&mut vcpu, &mut exit_ptr, ptr::null()), "hv_vcpu_create fork");
+        check_hv(hvf::hv_vcpu_set_sys_reg(vcpu, hvf::HV_SYS_REG_MPIDR_EL1, 0x8000_0000), "set MPIDR");
+    }
+
+    // Restore GIC device state AFTER gic_create + vcpu_create (Apple requirement)
     let gic_state_path = template_dir.join("gic.state");
     if gic_state_path.exists() {
         let gic_state = std::fs::read(&gic_state_path).expect("read gic.state");
@@ -625,20 +647,24 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
         }
     }
 
-    // Create vCPU and restore CPU state
-    let mut vcpu: u64 = 0;
-    let mut exit_ptr: *const hvf::HvVcpuExit = ptr::null();
+    // Restore ICC (GIC CPU interface) registers
+    let icc_path = template_dir.join("icc.state");
+    if icc_path.exists() {
+        let icc_data = std::fs::read(&icc_path).expect("read icc.state");
+        let mut off = 0;
+        for &reg_id in hvf::ICC_REGS {
+            if off + 8 <= icc_data.len() {
+                let val = u64::from_le_bytes(icc_data[off..off + 8].try_into().unwrap());
+                unsafe {
+                    check_hv(hvf::hv_gic_set_icc_reg(vcpu, reg_id, val), "set ICC reg");
+                }
+                off += 8;
+            }
+        }
+    }
+
     unsafe {
-        check_hv(hvf::hv_vcpu_create(&mut vcpu, &mut exit_ptr, ptr::null()), "hv_vcpu_create fork");
-        check_hv(hvf::hv_vcpu_set_sys_reg(vcpu, hvf::HV_SYS_REG_MPIDR_EL1, 0x8000_0000), "set MPIDR");
-
-        // Step 1: Restore all CPU registers (GPR, sys regs incl CNTV_CVAL/CTL, SIMD)
-        template.cpu_state.restore(vcpu);
-
-        // Step 2: Set vtimer offset AFTER restoring sys regs (QEMU order).
-        // This ensures CNTVCT_EL0 = mach_absolute_time() - offset resumes
-        // from the guest's counter value at snapshot time. HVF re-evaluates
-        // the timer comparison (CNTVCT >= CNTV_CVAL) with the correct offset.
+        // Step 1: Set vtimer offset FIRST (so CNTVCT has correct base)
         let timer_meta_path = template_dir.join("timer.meta");
         if timer_meta_path.exists() {
             let meta = std::fs::read_to_string(&timer_meta_path).expect("read timer.meta");
@@ -651,10 +677,12 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
             let now = mach_absolute_time();
             let new_offset = now - guest_counter;
             check_hv(hvf::hv_vcpu_set_vtimer_offset(vcpu, new_offset), "set vtimer offset");
-            eprintln!("Restored vtimer: guest_counter={} new_offset={}", guest_counter, new_offset);
         }
 
-        // Step 3: Unmask vtimer so HVF delivers VTIMER_ACTIVATED
+        // Step 2: Restore all CPU registers (including CNTV_CVAL, CNTV_CTL, CNTP_*)
+        template.cpu_state.restore(vcpu);
+
+        // Step 3: Unmask vtimer
         check_hv(hvf::hv_vcpu_set_vtimer_mask(vcpu, false), "unmask vtimer fork");
     }
 

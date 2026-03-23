@@ -96,12 +96,39 @@ pub const HV_SYS_REG_TPIDR_EL0: u16 = 0xde82;
 pub const HV_SYS_REG_TPIDRRO_EL0: u16 = 0xde83;
 pub const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
 pub const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
+// Physical timer registers (available with GIC, macOS 15.0+)
+pub const HV_SYS_REG_CNTP_CTL_EL0: u16 = 0xdf11;
+pub const HV_SYS_REG_CNTP_CVAL_EL0: u16 = 0xdf12;
 // EL2 timer control — only available with GIC (macOS 15.0+)
 pub const HV_SYS_REG_CNTHCTL_EL2: u16 = 0xe708;
 pub const HV_SYS_REG_SP_EL1: u16 = 0xe208;
 
 // Interrupt types
 pub const HV_INTERRUPT_TYPE_IRQ: u32 = 0;
+
+// GIC ICC register IDs (for per-vCPU interrupt controller state)
+pub const HV_GIC_ICC_REG_PMR_EL1: u16 = 0xc230;
+pub const HV_GIC_ICC_REG_BPR0_EL1: u16 = 0xc643;
+pub const HV_GIC_ICC_REG_AP0R0_EL1: u16 = 0xc644;
+pub const HV_GIC_ICC_REG_AP1R0_EL1: u16 = 0xc648;
+pub const HV_GIC_ICC_REG_BPR1_EL1: u16 = 0xc663;
+pub const HV_GIC_ICC_REG_CTLR_EL1: u16 = 0xc664;
+pub const HV_GIC_ICC_REG_SRE_EL1: u16 = 0xc665;
+pub const HV_GIC_ICC_REG_IGRPEN0_EL1: u16 = 0xc666;
+pub const HV_GIC_ICC_REG_IGRPEN1_EL1: u16 = 0xc667;
+
+/// ICC registers to save/restore for GIC CPU interface state.
+pub const ICC_REGS: &[u16] = &[
+    HV_GIC_ICC_REG_PMR_EL1,
+    HV_GIC_ICC_REG_BPR0_EL1,
+    HV_GIC_ICC_REG_AP0R0_EL1,
+    HV_GIC_ICC_REG_AP1R0_EL1,
+    HV_GIC_ICC_REG_BPR1_EL1,
+    HV_GIC_ICC_REG_CTLR_EL1,
+    HV_GIC_ICC_REG_SRE_EL1,
+    HV_GIC_ICC_REG_IGRPEN0_EL1,
+    HV_GIC_ICC_REG_IGRPEN1_EL1,
+];
 
 /// System registers we snapshot/restore for a vCPU.
 pub const SNAPSHOT_SYS_REGS: &[u16] = &[
@@ -126,6 +153,8 @@ pub const SNAPSHOT_SYS_REGS: &[u16] = &[
     HV_SYS_REG_TPIDRRO_EL0,
     HV_SYS_REG_CNTV_CTL_EL0,
     HV_SYS_REG_CNTV_CVAL_EL0,
+    HV_SYS_REG_CNTP_CTL_EL0,
+    HV_SYS_REG_CNTP_CVAL_EL0,
     HV_SYS_REG_SP_EL1,
     HV_SYS_REG_AFSR0_EL1,
     HV_SYS_REG_AFSR1_EL1,
