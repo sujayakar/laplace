@@ -1,0 +1,11 @@
+#!/bin/sh
+# Wrapper for zig as a C/C++ cross-compiler for aarch64-linux-gnu.
+# Filters out --target flags that zig doesn't understand.
+args=""
+for arg in "$@"; do
+    case "$arg" in
+        --target=*) ;; # skip — we set our own target
+        *) args="$args $arg" ;;
+    esac
+done
+exec zig cc -target aarch64-linux-gnu.2.31 $args

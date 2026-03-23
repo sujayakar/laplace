@@ -1,7 +1,7 @@
 entitlements := "entitlements.plist"
 guest_bin := "guest/target/aarch64-unknown-none/release/convex-guest"
 template_dir := "/tmp/hvf-template"
-host_bin := "./target/debug/convex-hypervisor"
+host_bin := "./target/release/convex-hypervisor"
 
 # Build everything and run the guest directly (no snapshot)
 run *args: guest (_build-and-sign "convex-hypervisor" "convex-hypervisor")
@@ -98,5 +98,5 @@ run-spike: spike
 
 # Build a binary, then codesign it with the hypervisor entitlement
 _build-and-sign crate binary:
-    cargo build -p {{crate}}
-    codesign --sign - --entitlements {{entitlements}} --force target/debug/{{binary}}
+    cargo build --release -p {{crate}}
+    codesign --sign - --entitlements {{entitlements}} --force target/release/{{binary}}

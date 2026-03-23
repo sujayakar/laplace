@@ -18,7 +18,7 @@ use crate::{alloc_pages, page_align};
 /// Guest memory layout for Linux boot.
 /// We place RAM at a standard base address and use the top of RAM for DTB.
 const GUEST_RAM_BASE: u64 = 0x4000_0000;
-const GUEST_RAM_SIZE: u64 = 256 * 1024 * 1024; // 256 MiB
+const GUEST_RAM_SIZE: u64 = 512 * 1024 * 1024; // 512 MiB
 
 /// Kernel is loaded at RAM_BASE + 0x80000 (standard ARM64 Image offset)
 const KERNEL_OFFSET: u64 = 0x8_0000;
@@ -611,13 +611,29 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
         check_hv(hvf::hv_vcpu_create(&mut vcpu, &mut exit_ptr, ptr::null()), "hv_vcpu_create fork");
         check_hv(hvf::hv_vcpu_set_sys_reg(vcpu, hvf::HV_SYS_REG_MPIDR_EL1, 0x8000_0000), "set MPIDR");
         template.cpu_state.restore(vcpu);
+
+        // After restoring from snapshot, the vtimer's CNTV_CVAL is likely
+        // in the past (the real counter kept ticking during snapshot/fork).
+        // Force an immediate timer interrupt by setting CNTV_CVAL to 0
+        // (guaranteed past) and enabling the timer, then unmasking.
+        check_hv(
+            hvf::hv_vcpu_set_sys_reg(vcpu, hvf::HV_SYS_REG_CNTV_CVAL_EL0, 0),
+            "set CNTV_CVAL to 0 for immediate timer",
+        );
+        check_hv(
+            hvf::hv_vcpu_set_sys_reg(vcpu, hvf::HV_SYS_REG_CNTV_CTL_EL0, 1),
+            "enable CNTV_CTL",
+        );
         check_hv(hvf::hv_vcpu_set_vtimer_mask(vcpu, false), "unmask vtimer fork");
     }
 
     let uart = Pl011::new(dtb::UART_BASE);
     let mut vtimer = VirtualTimer::new();
 
-    let watchdog = spawn_watchdog(vcpu, 10);
+    // Watchdog forces periodic VM exits. On each exit we unmask the vtimer
+    // and ensure a timer interrupt fires, keeping the kernel scheduler alive.
+    // V8 init can take 10+ seconds with thread creation.
+    let watchdog = spawn_watchdog(vcpu, 300);
 
     // Run to completion
     let result = run_linux_vcpu_loop(vcpu, exit_ptr, mem, ram_size, &uart, &mut vtimer, None);
@@ -758,14 +774,28 @@ fn run_linux_vcpu_loop(
     let mut timer_count: u64 = 0;
     let mut wfi_count: u64 = 0;
     let mut sysreg_count: u64 = 0;
+    let mut canceled_count: u64 = 0;
+    let start_time = std::time::Instant::now();
+    let mut last_log = start_time;
 
     loop {
-        if exit_count > 0 && exit_count % 100_000 == 0 {
+        // Log every 2 seconds of wall time OR every 100K exits
+        let now = std::time::Instant::now();
+        let should_log = (exit_count > 0 && exit_count % 100_000 == 0)
+            || (now.duration_since(last_log).as_secs() >= 2 && exit_count > 0);
+        if should_log {
             let pc = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_PC) };
+            let cpsr = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_CPSR) };
+            let lr = unsafe { hvf::vcpu_get_reg(vcpu, 30) }; // x30 = LR
+            let el = (cpsr >> 2) & 3; // exception level from CPSR.M[3:2]
+            let sp = unsafe { hvf::vcpu_get_sys_reg(vcpu, hvf::HV_SYS_REG_SP_EL1) };
+            let elapsed = now.duration_since(start_time);
             eprintln!(
-                "[{} exits] PC=0x{:x} mmio={} hvc={} timer={} wfi={} sysreg={}",
-                exit_count, pc, mmio_count, hvc_count, timer_count, wfi_count, sysreg_count,
+                "[{:.1}s, {} exits] EL{} PC=0x{:x} SP=0x{:x} mmio={} hvc={} timer={} vtimer={} canceled={}",
+                elapsed.as_secs_f64(), exit_count, el, pc, sp,
+                mmio_count, hvc_count, timer_count, timer_count, canceled_count,
             );
+            last_log = now;
         }
         if exit_count > 10_000_000 {
             eprintln!("Too many exits, aborting");
@@ -784,6 +814,11 @@ fn run_linux_vcpu_loop(
                     "set pending IRQ",
                 );
             }
+        }
+        // Ensure vtimer is unmasked before every entry so HVF can
+        // deliver VTIMER_ACTIVATED exits when the timer fires.
+        unsafe {
+            let _ = hvf::hv_vcpu_set_vtimer_mask(vcpu, false);
         }
 
         unsafe {
@@ -947,6 +982,7 @@ fn run_linux_vcpu_loop(
             }
 
             hvf::HV_EXIT_REASON_CANCELED => {
+                canceled_count += 1;
                 // Forced exit from watchdog thread.
                 // Check if init has written READY to the mailbox.
                 if let Some(mbox) = mailbox_ptr {
@@ -957,9 +993,27 @@ fn run_linux_vcpu_loop(
                         return VmExitReason::Ready;
                     }
                 }
-                // Unmask vtimer in case HVF masked it.
+                // Force a timer interrupt for the kernel scheduler.
+                // The vtimer PPI (27) is how the kernel receives timer ticks.
+                // We can't directly inject a PPI via hv_gic_set_spi (that's for
+                // shared peripheral interrupts). Instead, use the pending
+                // interrupt mechanism + unmask vtimer to trigger a tick.
                 unsafe {
-                    let _ = hvf::hv_vcpu_set_vtimer_mask(vcpu, false);
+                    // Set an expired timer deadline and unmask
+                    check_hv(
+                        hvf::hv_vcpu_set_sys_reg(vcpu, hvf::HV_SYS_REG_CNTV_CVAL_EL0, 0),
+                        "set CNTV_CVAL expired",
+                    );
+                    check_hv(
+                        hvf::hv_vcpu_set_sys_reg(vcpu, hvf::HV_SYS_REG_CNTV_CTL_EL0, 1), // enable, unmask
+                        "set CNTV_CTL enabled",
+                    );
+                    check_hv(hvf::hv_vcpu_set_vtimer_mask(vcpu, false), "unmask vtimer");
+                    // Also directly pend an IRQ — belt and suspenders
+                    check_hv(
+                        hvf::hv_vcpu_set_pending_interrupt(vcpu, hvf::HV_INTERRUPT_TYPE_IRQ, true),
+                        "pend IRQ",
+                    );
                 }
             }
 

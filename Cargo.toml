@@ -1,7 +1,10 @@
 [workspace]
 members = ["spike", "host", "shared"]
-exclude = ["guest", "init", "runner-js"]
+exclude = ["guest", "init", "runner-js", "runner-v8"]
 resolver = "2"
 
 # guest and init are built separately with different target triples
 # (aarch64-unknown-none and aarch64-unknown-linux-musl respectively).
+
+[profile.release]
+debug = true  # debug symbols in release builds
