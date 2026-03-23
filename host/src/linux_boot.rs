@@ -59,6 +59,167 @@ fn create_vm_with_el2() {
     }
 }
 
+// ── Timer instruction patching ────────────────────────────────────────────────
+//
+// On M1 (no EL2), we can't trap CNTVCT_EL0 reads via CNTHCTL_EL2.
+// Instead, we binary-patch the kernel image: replace every
+//   MRS Xn, CNTVCT_EL0   (0xd53be040 | Rt)
+//   MRS Xn, CNTPCT_EL0   (0xd53be020 | Rt)
+//   MRS Xn, CNTFRQ_EL0   (0xd53be000 | Rt)
+// with
+//   HVC #(0x100 + Rt)   for counter reads
+//   HVC #(0x140 + Rt)   for frequency reads
+//
+// The HVC handler detects imm >= 0x100, writes the virtual counter value
+// to the target register, and returns. HVC is 4 bytes, same as MRS.
+
+// HVC immediate encoding for patched timer instructions:
+// 0x100 + Rt: read virtual/physical counter → Xrt
+// 0x140 + Rt: read counter frequency → Xrt
+// 0x180 + Rt: read CNTV_CTL → Xrt
+// 0x1C0 + Rt: write Xrt → CNTV_CTL
+// 0x200 + Rt: read CNTV_CVAL → Xrt
+// 0x240 + Rt: write Xrt → CNTV_CVAL
+// 0x280 + Rt: read CNTV_TVAL → Xrt
+// 0x2C0 + Rt: write Xrt → CNTV_TVAL
+const HVC_COUNTER_READ: u16 = 0x100;
+const HVC_FREQ_READ: u16 = 0x140;
+const HVC_CTL_READ: u16 = 0x180;
+const HVC_CTL_WRITE: u16 = 0x1C0;
+const HVC_CVAL_READ: u16 = 0x200;
+const HVC_CVAL_WRITE: u16 = 0x240;
+const HVC_TVAL_READ: u16 = 0x280;
+const HVC_TVAL_WRITE: u16 = 0x2C0;
+
+/// Encode an HVC #imm16 instruction.
+fn encode_hvc(imm: u16) -> u32 {
+    0xD400_0002 | ((imm as u32) << 5)
+}
+
+/// Read a 4-byte little-endian instruction from memory.
+unsafe fn read_insn(ptr: *const u8, offset: usize) -> u32 {
+    u32::from_le_bytes([
+        *ptr.add(offset),
+        *ptr.add(offset + 1),
+        *ptr.add(offset + 2),
+        *ptr.add(offset + 3),
+    ])
+}
+
+/// Write a 4-byte little-endian instruction to memory.
+unsafe fn write_insn(ptr: *mut u8, offset: usize, insn: u32) {
+    let bytes = insn.to_le_bytes();
+    *ptr.add(offset) = bytes[0];
+    *ptr.add(offset + 1) = bytes[1];
+    *ptr.add(offset + 2) = bytes[2];
+    *ptr.add(offset + 3) = bytes[3];
+}
+
+/// Patch all timer register accesses in the loaded kernel image.
+/// Replaces MRS/MSR instructions with HVC calls so the hypervisor
+/// fully controls the timer for deterministic execution.
+fn patch_timer_reads(mem: *mut u8, kernel_offset: usize, kernel_file_size: usize) -> usize {
+    let mut patched = 0;
+    let kernel_start = unsafe { mem.add(kernel_offset) };
+
+    for i in (0..kernel_file_size).step_by(4) {
+        let insn = unsafe { read_insn(kernel_start, i) };
+        let rt = insn & 0x1F;
+
+        // Check for timer-related MRS/MSR instructions.
+        // MRS (read): bit 21 = 1, base = 0xd53be000
+        // MSR (write): bit 21 = 0, base = 0xd51be000
+        let replacement = match insn & 0xFFFF_FFE0 {
+            // Counter reads (MRS)
+            0xd53b_e040 => encode_hvc(HVC_COUNTER_READ + rt as u16),  // CNTVCT_EL0
+            0xd53b_e020 => encode_hvc(HVC_COUNTER_READ + rt as u16),  // CNTPCT_EL0
+            0xd53b_e000 => encode_hvc(HVC_FREQ_READ + rt as u16),     // CNTFRQ_EL0
+            // Virtual timer control (MRS reads)
+            0xd53b_e320 => encode_hvc(HVC_CTL_READ + rt as u16),      // CNTV_CTL_EL0 read
+            0xd53b_e340 => encode_hvc(HVC_CVAL_READ + rt as u16),     // CNTV_CVAL_EL0 read
+            0xd53b_e300 => encode_hvc(HVC_TVAL_READ + rt as u16),     // CNTV_TVAL_EL0 read
+            // Virtual timer control (MSR writes)
+            0xd51b_e320 => encode_hvc(HVC_CTL_WRITE + rt as u16),     // CNTV_CTL_EL0 write
+            0xd51b_e340 => encode_hvc(HVC_CVAL_WRITE + rt as u16),    // CNTV_CVAL_EL0 write
+            0xd51b_e300 => encode_hvc(HVC_TVAL_WRITE + rt as u16),    // CNTV_TVAL_EL0 write
+            _ => continue,
+        };
+
+        unsafe { write_insn(kernel_start as *mut u8, i, replacement); }
+        patched += 1;
+    }
+    patched
+}
+
+/// Check if an HVC immediate is a patched timer read, and handle it.
+/// Returns true if handled, false if this is a regular HVC.
+fn handle_patched_timer_hvc(
+    vcpu: u64,
+    syndrome: u64,
+    vtimer: &mut VirtualTimer,
+) -> bool {
+    let imm = (syndrome & 0xFFFF) as u16;
+    if imm < HVC_COUNTER_READ {
+        return false; // Not a patched timer HVC
+    }
+    let kind = imm & 0xFFC0; // top bits select operation
+    let rt = (imm & 0x1F) as u32;
+
+    match kind {
+        0x100 => {
+            // Counter read (CNTVCT / CNTPCT)
+            let val = vtimer.read_counter();
+            unsafe { check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, val), "timer counter read"); }
+            if vtimer.check_pending() {
+                unsafe {
+                    check_hv(
+                        hvf::hv_vcpu_set_pending_interrupt(vcpu, hvf::HV_INTERRUPT_TYPE_IRQ, true),
+                        "inject timer IRQ",
+                    );
+                }
+            }
+        }
+        0x140 => {
+            // Frequency read (CNTFRQ)
+            unsafe {
+                check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, crate::vtimer::COUNTER_FREQ_HZ), "freq");
+            }
+        }
+        0x180 => {
+            // CNTV_CTL read
+            let val = vtimer.read_ctl();
+            unsafe { check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, val), "ctl read"); }
+        }
+        0x1C0 => {
+            // CNTV_CTL write
+            let val = unsafe { hvf::vcpu_get_reg(vcpu, rt) };
+            vtimer.write_ctl(val);
+        }
+        0x200 => {
+            // CNTV_CVAL read
+            let val = vtimer.read_cval();
+            unsafe { check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, val), "cval read"); }
+        }
+        0x240 => {
+            // CNTV_CVAL write
+            let val = unsafe { hvf::vcpu_get_reg(vcpu, rt) };
+            vtimer.write_cval(val);
+        }
+        0x280 => {
+            // CNTV_TVAL read
+            let val = vtimer.read_cval().wrapping_sub(vtimer.counter) as i32;
+            unsafe { check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, val as u64), "tval read"); }
+        }
+        0x2C0 => {
+            // CNTV_TVAL write
+            let val = unsafe { hvf::vcpu_get_reg(vcpu, rt) };
+            vtimer.write_tval(val);
+        }
+        _ => return false,
+    }
+    true
+}
+
 /// Load kernel image, optional initrd, and generated DTB into a freshly
 /// allocated guest memory region.
 fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>) -> LoadedKernel {
@@ -98,11 +259,14 @@ fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>) -> Loa
     } else {
         kernel_data.len()
     };
+    // Patch timer counter reads in the kernel for deterministic time
+    let patched = patch_timer_reads(mem, kernel_load_offset, kernel_data.len());
     eprintln!(
-        "Kernel loaded at GPA 0x{:x} (file={}, image_size={})",
+        "Kernel loaded at GPA 0x{:x} (file={}, image_size={}, patched {} timer reads)",
         kernel_entry,
         kernel_data.len(),
         kernel_image_size,
+        patched,
     );
 
     // Load initrd after kernel image_size (page-aligned), not after file size
@@ -649,8 +813,10 @@ fn run_linux_vcpu_loop(
                         let x0 = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_X0) };
                         let x1 = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_X1) };
 
-                        // Check our hypercall IDs first
-                        if x0 == convex_shared::HC_READY {
+                        // Check for patched timer reads first (HVC #0x100+)
+                        if handle_patched_timer_hvc(vcpu, syndrome, vtimer) {
+                            // Timer read handled — continue execution
+                        } else if x0 == convex_shared::HC_READY {
                             eprintln!("Guest signaled HC_READY (snapshot point)");
                             print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
                             return VmExitReason::Ready;
