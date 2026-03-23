@@ -9,6 +9,7 @@ use std::os::unix::io::AsRawFd;
 
 use boa_engine::{Context, Source};
 
+// Must match LINUX_MAILBOX_GPA/SIZE in host/src/linux_boot.rs and init/src/main.rs
 const MAILBOX_GPA: u64 = 0x3FFF_0000;
 const MAILBOX_SIZE: usize = 64 * 1024;
 

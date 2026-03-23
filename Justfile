@@ -44,6 +44,7 @@ demo: guest (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     @echo "═══════════════════════════════════════════════════"
 
 init_bin := "init/target/aarch64-unknown-none/release/convex-init"
+runner_js_bin := "runner-js/target/aarch64-unknown-linux-musl/release/convex-runner-js"
 initramfs := "/tmp/hvf-initramfs.cpio"
 linux_kernel := "kernel/Image-arm64"
 linux_template := "/tmp/hvf-linux-template"
@@ -56,16 +57,24 @@ boot-linux kernel *args: (_build-and-sign "convex-hypervisor" "convex-hypervisor
 init:
     cd init && cargo build --release --target aarch64-unknown-none
 
-# Build initramfs from the init binary
+# Build the JS runner (Boa engine, musl-static)
+runner-js:
+    cd runner-js && cargo build --target aarch64-unknown-linux-musl --release
+
+# Build initramfs from the init binary (no runner)
 initramfs: init
     ./scripts/mkinitramfs.sh {{init_bin}} {{initramfs}}
+
+# Build initramfs with JS runner
+initramfs-js: init runner-js
+    ./scripts/mkinitramfs.sh {{init_bin}} {{initramfs}} {{runner_js_bin}}
 
 # Boot Linux with initramfs (no snapshot)
 boot: initramfs (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     {{host_bin}} boot-linux {{linux_kernel}} --initrd {{initramfs}}
 
-# Snapshot: boot Linux to HC_READY, save template
-snapshot-linux: initramfs (_build-and-sign "convex-hypervisor" "convex-hypervisor")
+# Snapshot: boot Linux to HC_READY, save template (with JS runner)
+snapshot-linux: initramfs-js (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     {{host_bin}} snapshot-linux {{linux_kernel}} --initrd {{initramfs}} {{linux_template}}
 
 # Fork: resume from snapshot with a message
