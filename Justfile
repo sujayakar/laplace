@@ -43,6 +43,10 @@ demo: guest (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     @echo "  Demo complete!"
     @echo "═══════════════════════════════════════════════════"
 
+# Boot a Linux kernel in the VM
+boot-linux kernel *args: (_build-and-sign "convex-hypervisor" "convex-hypervisor")
+    {{host_bin}} boot-linux {{kernel}} {{args}}
+
 # Build the guest (no_std aarch64 binary)
 guest:
     cd guest && cargo build --release

@@ -5,3 +5,4 @@ spike/target/
 *.o
 *.a
 /tmp/
+kernel/

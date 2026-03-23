@@ -2,9 +2,14 @@ use std::path::Path;
 use std::ptr;
 use std::time::Instant;
 
+mod dtb;
 mod elf;
 mod hvf;
+mod linux_boot;
+mod pl011;
+mod psci;
 mod snapshot;
+mod vtimer;
 
 use convex_shared::{HC_CONSOLE, HC_DB_READ, HC_EXIT, HC_RANDOM, HC_READY, HC_TIME};
 use convex_shared::{GUEST_BASE, GUEST_MEM_SIZE, MAILBOX_OFFSET, MAILBOX_SIZE};
@@ -536,10 +541,18 @@ fn main() {
         eprintln!("  convex-hypervisor snapshot <guest.elf> <template-dir>");
         eprintln!("  convex-hypervisor fork [--seed N] [--js 'code'] <template-dir>");
         eprintln!("  convex-hypervisor bench [--iterations N] [--js 'code'] <template-dir>");
+        eprintln!("  convex-hypervisor boot-linux <kernel-image> [--initrd <initrd>]");
         std::process::exit(1);
     }
 
     match args[1].as_str() {
+        "boot-linux" => {
+            let (kernel_path, initrd_path) = parse_boot_linux_args(&args[2..]);
+            linux_boot::cmd_boot_linux(
+                Path::new(&kernel_path),
+                initrd_path.as_deref().map(Path::new),
+            );
+        }
         "run" => {
             let (seed, guest_path) = parse_run_args(&args[2..]);
             cmd_run(Path::new(&guest_path), seed);
@@ -637,6 +650,29 @@ fn parse_bench_args(args: &[String]) -> (usize, String, String) {
         }
     }
     (iterations, js_code, template_dir)
+}
+
+fn parse_boot_linux_args(args: &[String]) -> (String, Option<String>) {
+    let mut kernel_path = String::new();
+    let mut initrd_path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--initrd" => {
+                initrd_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            other => {
+                kernel_path = other.to_string();
+                i += 1;
+            }
+        }
+    }
+    if kernel_path.is_empty() {
+        eprintln!("boot-linux requires a kernel image path");
+        std::process::exit(1);
+    }
+    (kernel_path, initrd_path)
 }
 
 #[cfg(test)]

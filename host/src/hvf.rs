@@ -14,7 +14,10 @@ pub const HV_MEMORY_WRITE: HvMemoryFlags = 1 << 1;
 pub const HV_MEMORY_EXEC: HvMemoryFlags = 1 << 2;
 
 // Exit reasons
+pub const HV_EXIT_REASON_CANCELED: u32 = 0;
 pub const HV_EXIT_REASON_EXCEPTION: u32 = 1;
+pub const HV_EXIT_REASON_VTIMER_ACTIVATED: u32 = 2;
+pub const HV_EXIT_REASON_UNKNOWN: u32 = 3;
 
 // General-purpose register IDs (sequential enum from hv_vcpu_types.h)
 pub const HV_REG_X0: u32 = 0;
@@ -73,7 +76,13 @@ pub const HV_SYS_REG_TPIDR_EL1: u16 = 0xc684;
 pub const HV_SYS_REG_CNTKCTL_EL1: u16 = 0xc708;
 pub const HV_SYS_REG_TPIDR_EL0: u16 = 0xde82;
 pub const HV_SYS_REG_TPIDRRO_EL0: u16 = 0xde83;
+pub const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
+pub const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
 pub const HV_SYS_REG_SP_EL1: u16 = 0xe208;
+pub const HV_SYS_REG_MPIDR_EL1: u16 = 0xc005;
+
+// Interrupt types
+pub const HV_INTERRUPT_TYPE_IRQ: u32 = 0;
 
 /// System registers we snapshot/restore for a vCPU.
 pub const SNAPSHOT_SYS_REGS: &[u16] = &[
@@ -110,12 +119,14 @@ pub struct HvVcpuExit {
 
 type HvVmConfig = *const std::ffi::c_void;
 type HvVcpuConfig = *const std::ffi::c_void;
+pub type HvGicConfig = *const std::ffi::c_void;
 
 #[link(name = "Hypervisor", kind = "framework")]
 extern "C" {
     pub fn hv_vm_create(config: HvVmConfig) -> HvReturn;
     pub fn hv_vm_destroy() -> HvReturn;
     pub fn hv_vm_map(addr: *mut u8, ipa: HvIpa, size: usize, flags: HvMemoryFlags) -> HvReturn;
+    pub fn hv_vm_unmap(ipa: HvIpa, size: usize) -> HvReturn;
     pub fn hv_vcpu_create(
         vcpu: *mut HvVcpu,
         exit: *mut *const HvVcpuExit,
@@ -137,6 +148,50 @@ extern "C" {
         reg: u32,
         value: *const HvSimdFpUchar16,
     ) -> HvReturn;
+
+    // vtimer mask
+    pub fn hv_vcpu_set_vtimer_mask(vcpu: HvVcpu, vtimer_is_masked: bool) -> HvReturn;
+
+    // Pending interrupt injection
+    pub fn hv_vcpu_set_pending_interrupt(
+        vcpu: HvVcpu,
+        r#type: u32,
+        pending: bool,
+    ) -> HvReturn;
+
+    // GIC configuration
+    pub fn hv_gic_config_create() -> HvGicConfig;
+    pub fn hv_gic_config_set_distributor_base(
+        config: HvGicConfig,
+        distributor_base_address: HvIpa,
+    ) -> HvReturn;
+    pub fn hv_gic_config_set_redistributor_base(
+        config: HvGicConfig,
+        redistributor_base_address: HvIpa,
+    ) -> HvReturn;
+
+    // GIC lifecycle
+    pub fn hv_gic_create(gic_config: HvGicConfig) -> HvReturn;
+    pub fn hv_gic_reset() -> HvReturn;
+    pub fn hv_gic_set_spi(intid: u32, level: bool) -> HvReturn;
+
+    // GIC parameter queries
+    pub fn hv_gic_get_distributor_size(size: *mut usize) -> HvReturn;
+    pub fn hv_gic_get_distributor_base_alignment(alignment: *mut usize) -> HvReturn;
+    pub fn hv_gic_get_redistributor_region_size(size: *mut usize) -> HvReturn;
+    pub fn hv_gic_get_redistributor_base_alignment(alignment: *mut usize) -> HvReturn;
+    pub fn hv_gic_get_spi_interrupt_range(
+        spi_intid_base: *mut u32,
+        spi_intid_count: *mut u32,
+    ) -> HvReturn;
+    pub fn hv_gic_get_redistributor_base(
+        vcpu: HvVcpu,
+        redistributor_base_address: *mut HvIpa,
+    ) -> HvReturn;
+    pub fn hv_gic_get_intid(interrupt: u16, intid: *mut u32) -> HvReturn;
+
+    // Force vCPU exit
+    pub fn hv_vcpus_exit(vcpus: *const HvVcpu, vcpu_count: u32) -> HvReturn;
 }
 
 pub fn check_hv(ret: HvReturn, context: &str) {

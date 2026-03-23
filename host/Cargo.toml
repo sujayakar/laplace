@@ -9,3 +9,4 @@ goblin = { version = "0.9", default-features = false, features = ["elf32", "elf6
 libc = "0.2"
 rand = { version = "0.8", default-features = false }
 rand_chacha = "0.3"
+vm-fdt = "0.3"
