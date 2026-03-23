@@ -62,16 +62,12 @@ fn create_vm_with_el2() {
 // ── Timer instruction patching ────────────────────────────────────────────────
 //
 // On M1 (no EL2), we can't trap CNTVCT_EL0 reads via CNTHCTL_EL2.
-// Instead, we binary-patch the kernel image: replace every
-//   MRS Xn, CNTVCT_EL0   (0xd53be040 | Rt)
-//   MRS Xn, CNTPCT_EL0   (0xd53be020 | Rt)
-//   MRS Xn, CNTFRQ_EL0   (0xd53be000 | Rt)
-// with
-//   HVC #(0x100 + Rt)   for counter reads
-//   HVC #(0x140 + Rt)   for frequency reads
+// Instead, we binary-patch the kernel image: replace every MRS/MSR to
+// timer registers with an HVC instruction. Both are 4 bytes, and the
+// HVC immediate encodes the operation type + target register.
 //
-// The HVC handler detects imm >= 0x100, writes the virtual counter value
-// to the target register, and returns. HVC is 4 bytes, same as MRS.
+// The HVC handler in the vCPU loop detects imm >= 0x100 and dispatches
+// to vtimer.rs, which fully controls all timer state.
 
 // HVC immediate encoding for patched timer instructions:
 // 0x100 + Rt: read virtual/physical counter → Xrt
@@ -96,23 +92,14 @@ fn encode_hvc(imm: u16) -> u32 {
     0xD400_0002 | ((imm as u32) << 5)
 }
 
-/// Read a 4-byte little-endian instruction from memory.
 unsafe fn read_insn(ptr: *const u8, offset: usize) -> u32 {
-    u32::from_le_bytes([
-        *ptr.add(offset),
-        *ptr.add(offset + 1),
-        *ptr.add(offset + 2),
-        *ptr.add(offset + 3),
-    ])
+    // ARM instructions in Image are always little-endian and 4-byte aligned.
+    // We're on a LE host (aarch64-apple-darwin) so native read works.
+    ptr::read(ptr.add(offset) as *const u32)
 }
 
-/// Write a 4-byte little-endian instruction to memory.
 unsafe fn write_insn(ptr: *mut u8, offset: usize, insn: u32) {
-    let bytes = insn.to_le_bytes();
-    *ptr.add(offset) = bytes[0];
-    *ptr.add(offset + 1) = bytes[1];
-    *ptr.add(offset + 2) = bytes[2];
-    *ptr.add(offset + 3) = bytes[3];
+    ptr::write(ptr.add(offset) as *mut u32, insn);
 }
 
 /// Patch all timer register accesses in the loaded kernel image.
@@ -916,7 +903,7 @@ fn run_linux_vcpu_loop(
                     // MSR/MRS trap (system register access)
                     0x18 => {
                         sysreg_count += 1;
-                        handle_sys_reg_trap(vcpu, syndrome, vtimer);
+                        handle_sys_reg_trap(vcpu, syndrome);
                     }
 
                     _ => {
@@ -1037,127 +1024,28 @@ fn handle_mmio(
 }
 
 /// Handle trapped MSR/MRS (system register access, EC=0x18).
-/// Used for timer register trapping.
-fn handle_sys_reg_trap(vcpu: u64, syndrome: u64, vtimer: &mut VirtualTimer) {
-    // ISS encoding for MSR/MRS traps (EC=0x18):
-    // [19:17]: Op0, [16:14]: Op2, [13:10]: CRn, [9:5]: Rt, [4:1]: CRm, [0]: direction
+/// Timer registers are handled via binary patching (HVC), so this only
+/// handles non-timer sysreg traps.
+fn handle_sys_reg_trap(vcpu: u64, syndrome: u64) {
     let direction = syndrome & 1; // 1 = read (MRS), 0 = write (MSR)
-    let crm = (syndrome >> 1) & 0xf;
     let rt = ((syndrome >> 5) & 0x1f) as u32;
-    let crn = (syndrome >> 10) & 0xf;
-    let op1 = (syndrome >> 14) & 0x7;
-    let op2 = (syndrome >> 17) & 0x7;
-    let op0 = (syndrome >> 20) & 0x3;
+    let pc = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_PC) };
 
-    // Identify the register being accessed.
-    // CNTVCT_EL0: op0=3, op1=3, CRn=14, CRm=0, op2=2
-    // CNTPCT_EL0: op0=3, op1=3, CRn=14, CRm=0, op2=1
-    // CNTV_CTL_EL0: op0=3, op1=3, CRn=14, CRm=3, op2=1
-    // CNTV_CVAL_EL0: op0=3, op1=3, CRn=14, CRm=3, op2=2
-    // CNTV_TVAL_EL0: op0=3, op1=3, CRn=14, CRm=3, op2=0
-    // CNTFRQ_EL0: op0=3, op1=3, CRn=14, CRm=0, op2=0
+    eprintln!(
+        "Trapped sys reg: ISS=0x{:x} dir={} Rt=x{} PC=0x{:x}",
+        syndrome & 0x1FFFFF, direction, rt, pc
+    );
 
-    let is_timer = op0 == 3 && op1 == 3 && crn == 14;
-
-    if is_timer {
-        match (crm, op2, direction) {
-            // CNTFRQ_EL0 read
-            (0, 0, 1) => unsafe {
-                check_hv(
-                    hvf::hv_vcpu_set_reg(vcpu, rt, crate::vtimer::COUNTER_FREQ_HZ),
-                    "set CNTFRQ",
-                );
-            },
-            // CNTPCT_EL0 read (physical counter)
-            (0, 1, 1) => {
-                let val = vtimer.read_counter();
-                unsafe {
-                    check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, val), "set CNTPCT");
-                }
-            }
-            // CNTVCT_EL0 read (virtual counter)
-            (0, 2, 1) => {
-                let val = vtimer.read_counter();
-                unsafe {
-                    check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, val), "set CNTVCT");
-                }
-            }
-            // CNTV_TVAL_EL0 write
-            (3, 0, 0) => {
-                let val = unsafe { hvf::vcpu_get_reg(vcpu, rt) };
-                vtimer.write_tval(val);
-            }
-            // CNTV_TVAL_EL0 read: remaining ticks = cval - counter
-            (3, 0, 1) => {
-                let val = vtimer.read_cval().wrapping_sub(vtimer.counter) as i32;
-                unsafe {
-                    check_hv(
-                        hvf::hv_vcpu_set_reg(vcpu, rt, val as u64),
-                        "set CNTV_TVAL",
-                    );
-                }
-            }
-            // CNTV_CTL_EL0 write
-            (3, 1, 0) => {
-                let val = unsafe { hvf::vcpu_get_reg(vcpu, rt) };
-                vtimer.write_ctl(val);
-                // Unmask HVF vtimer if guest enables the timer
-                // (so we get VTIMER_ACTIVATED exits as a fallback)
-                unsafe {
-                    let _ = hvf::hv_vcpu_set_vtimer_mask(vcpu, (val & 2) != 0);
-                }
-            }
-            // CNTV_CTL_EL0 read
-            (3, 1, 1) => {
-                let val = vtimer.read_ctl();
-                unsafe {
-                    check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, val), "set CNTV_CTL");
-                }
-            }
-            // CNTV_CVAL_EL0 write
-            (3, 2, 0) => {
-                let val = unsafe { hvf::vcpu_get_reg(vcpu, rt) };
-                vtimer.write_cval(val);
-            }
-            // CNTV_CVAL_EL0 read
-            (3, 2, 1) => {
-                let val = vtimer.read_cval();
-                unsafe {
-                    check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, val), "set CNTV_CVAL");
-                }
-            }
-            _ => {
-                let pc = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_PC) };
-                eprintln!(
-                    "Unhandled timer reg access: CRm={} op2={} dir={} PC=0x{:x}",
-                    crm, op2, direction, pc
-                );
-            }
-        }
-    } else {
-        let pc = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_PC) };
-        eprintln!(
-            "Trapped sys reg: op0={} op1={} CRn={} CRm={} op2={} dir={} Rt=x{} PC=0x{:x}",
-            op0, op1, crn, crm, op2, direction, rt, pc
-        );
-        // Return 0 for reads of unknown sys regs
-        if direction == 1 {
-            unsafe {
-                check_hv(
-                    hvf::hv_vcpu_set_reg(vcpu, rt, 0),
-                    "set reg for unknown sysreg",
-                );
-            }
+    // Return 0 for reads of unknown sys regs
+    if direction == 1 {
+        unsafe {
+            check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, 0), "set reg for unknown sysreg");
         }
     }
 
     // Advance PC past the trapped instruction
     unsafe {
-        let pc = hvf::vcpu_get_reg(vcpu, hvf::HV_REG_PC);
-        check_hv(
-            hvf::hv_vcpu_set_reg(vcpu, hvf::HV_REG_PC, pc + 4),
-            "advance PC past sysreg trap",
-        );
+        check_hv(hvf::hv_vcpu_set_reg(vcpu, hvf::HV_REG_PC, pc + 4), "advance PC past sysreg");
     }
 }
 
@@ -1223,5 +1111,62 @@ mod tests {
     fn decode_without_isv_returns_none() {
         let syndrome = make_data_abort_syndrome(false, 2, false, 5, true);
         assert!(decode_data_abort(syndrome, 0x0900_0000).is_none());
+    }
+
+    #[test]
+    fn encode_hvc_encoding() {
+        // HVC #0 = 0xD4000002
+        assert_eq!(encode_hvc(0), 0xD4000002);
+        // HVC #0x100 = 0xD4002002 (0x100 << 5 = 0x2000)
+        assert_eq!(encode_hvc(0x100), 0xD4000002 | (0x100 << 5));
+        // HVC #0x105 = counter read into X5
+        let insn = encode_hvc(HVC_COUNTER_READ + 5);
+        assert_eq!(insn & 0xFFE0001F, 0xD4000002); // HVC base
+        assert_eq!((insn >> 5) & 0xFFFF, (HVC_COUNTER_READ + 5) as u32); // imm
+    }
+
+    #[test]
+    fn patch_timer_reads_replaces_cntvct() {
+        // Create a small buffer with a MRS X0, CNTVCT_EL0 instruction
+        let mut buf = vec![0u8; 16];
+        let mrs_x0_cntvct: u32 = 0xd53be040; // MRS X0, CNTVCT_EL0
+        let nop: u32 = 0xd503201f;
+        unsafe {
+            ptr::write(buf.as_mut_ptr() as *mut u32, mrs_x0_cntvct);
+            ptr::write(buf.as_mut_ptr().add(4) as *mut u32, nop);
+            ptr::write(buf.as_mut_ptr().add(8) as *mut u32, 0xd53be041); // MRS X1, CNTVCT
+            ptr::write(buf.as_mut_ptr().add(12) as *mut u32, nop);
+        }
+
+        let count = patch_timer_reads(buf.as_mut_ptr(), 0, 16);
+        assert_eq!(count, 2); // two CNTVCT reads patched
+
+        // Verify the first instruction was replaced with HVC #0x100
+        let patched0 = unsafe { ptr::read(buf.as_ptr() as *const u32) };
+        assert_eq!(patched0, encode_hvc(HVC_COUNTER_READ + 0)); // X0
+
+        // Second should be HVC #0x101 (X1)
+        let patched1 = unsafe { ptr::read(buf.as_ptr().add(8) as *const u32) };
+        assert_eq!(patched1, encode_hvc(HVC_COUNTER_READ + 1)); // X1
+
+        // NOP instructions should be unchanged
+        let nop0 = unsafe { ptr::read(buf.as_ptr().add(4) as *const u32) };
+        assert_eq!(nop0, nop);
+    }
+
+    #[test]
+    fn patch_timer_reads_handles_msr_writes() {
+        let mut buf = vec![0u8; 8];
+        let msr_x2_cval: u32 = 0xd51be342; // MSR CNTV_CVAL_EL0, X2
+        unsafe {
+            ptr::write(buf.as_mut_ptr() as *mut u32, msr_x2_cval);
+            ptr::write(buf.as_mut_ptr().add(4) as *mut u32, 0xd503201f); // NOP
+        }
+
+        let count = patch_timer_reads(buf.as_mut_ptr(), 0, 8);
+        assert_eq!(count, 1);
+
+        let patched = unsafe { ptr::read(buf.as_ptr() as *const u32) };
+        assert_eq!(patched, encode_hvc(HVC_CVAL_WRITE + 2)); // write X2 to CVAL
     }
 }
