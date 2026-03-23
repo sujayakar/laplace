@@ -28,7 +28,7 @@ impl CpuState {
             sys_regs.push(hvf::vcpu_get_sys_reg(vcpu, reg_id));
         }
 
-        let mut simd = [[0u8; 16]; 32];
+        let mut simd = [HvSimdFpUchar16::default(); 32];
         for i in 0..32 {
             check_hv(
                 hvf::hv_vcpu_get_simd_fp_reg(vcpu, i as u32, &mut simd[i]),
@@ -82,7 +82,7 @@ impl CpuState {
         }
         // SIMD: 32 * 16 = 512 bytes
         for reg in &self.simd {
-            buf.extend_from_slice(reg);
+            buf.extend_from_slice(&reg.0);
         }
         buf
     }
@@ -106,9 +106,9 @@ impl CpuState {
             off += 8;
         }
 
-        let mut simd = [[0u8; 16]; 32];
+        let mut simd = [HvSimdFpUchar16::default(); 32];
         for reg in &mut simd {
-            reg.copy_from_slice(&data[off..off + 16]);
+            reg.0.copy_from_slice(&data[off..off + 16]);
             off += 16;
         }
 

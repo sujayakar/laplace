@@ -19,7 +19,7 @@ Everything from M0-M5 is unchanged and proven:
 - Hypercall dispatch (HC_CONSOLE, HC_TIME, HC_RANDOM, HC_EXIT)
 - Deterministic PRNG (ChaCha8, seeded per-fork)
 - Virtual time (frozen timestamp via HC_TIME)
-- Mailbox protocol (64 KiB shared region for bulk data)
+- Inbox/outbox protocol (16 MiB shared region: 8 MiB inbox for JS input, 8 MiB outbox for output)
 - CLI and benchmark harness
 
 M6-M8 (micro-kernel, MMU, EL0/EL1 split, threading) were valuable learning but are superseded by this approach. The micro-kernel code may be useful as reference but won't ship.
@@ -249,13 +249,13 @@ The virtual timer interrupt (PPI 27) is handled via `HV_EXIT_REASON_VTIMER_ACTIV
 
 ## Milestones
 
-### M9: Minimal Linux kernel boots in VM (5-7 weeks)
+### M9: Minimal Linux kernel boots in VM (5-7 weeks) ✅ DONE (M9a-c)
 
 **Goal:** A stripped Linux kernel boots inside our existing hypervisor, reaches userspace, and runs a trivial init that prints "hello" via PL011 serial to the host. Then upgrade to virtio-vsock for production communication.
 
 This is the biggest milestone — it involves kernel config, DTB generation, GIC setup, MMIO emulation, fully virtualized timer, and PSCI. Split into sub-milestones:
 
-#### M9a: Kernel boots to earlycon (weeks 1-2)
+#### M9a: Kernel boots to earlycon (weeks 1-2) ✅ DONE
 
 The minimum: get kernel boot messages appearing on the host.
 
@@ -297,7 +297,7 @@ The minimum: get kernel boot messages appearing on the host.
 
 **Key risk:** GIC configuration. If HVF's GIC doesn't work as expected, this is where we'll find out.
 
-#### M9b: Fully virtualized timer (week 3)
+#### M9b: Fully virtualized timer (week 3) ✅ DONE
 
 The kernel needs timer interrupts for its scheduler. We must fully virtualize the timer — HVF's real-time vtimer is non-deterministic.
 
@@ -320,7 +320,7 @@ The kernel needs timer interrupts for its scheduler. We must fully virtualize th
 
 **Validation:** Kernel `dmesg` shows consistent `BogoMIPS` value across boots (proves timer is deterministic). Boot time is reasonable (not millions of VM exits).
 
-#### M9c: Initramfs + userspace (week 4)
+#### M9c: Initramfs + userspace (week 4) ✅ DONE
 
 Get to userspace with a minimal init process.
 
@@ -343,7 +343,7 @@ Get to userspace with a minimal init process.
 
 **Deliverable:** `just boot-linux` -> kernel boots, init prints "Hello from Linux in the VM!", VM exits cleanly.
 
-#### M9d: virtio-vsock (weeks 5-7)
+#### M9d: virtio-vsock (weeks 5-7) — SKIPPED
 
 Replace PL011 serial with virtio-vsock for production guest-host communication. Serial is fine for console output but too slow for DB queries (~1ms per round-trip vs ~60us for vsock).
 
@@ -396,7 +396,7 @@ This reuses the same hypercall IDs from phase 1, tunneled over vsock. The init p
 just boot-linux  # kernel boots, init runs, prints hello via vsock/serial
 ```
 
-### M10: Snapshot + fork with Linux (2-3 weeks)
+### M10: Snapshot + fork with Linux (2-3 weeks) ✅ DONE
 
 **Goal:** Snapshot the booted Linux VM (kernel initialized, init running, runtime loaded), fork from it with CoW, run user code in the fork.
 
@@ -437,7 +437,7 @@ just boot-linux  # kernel boots, init runs, prints hello via vsock/serial
 - Fork twice with different seeds -> different `Math.random()` values, same `Date.now()` (virtual time)
 - Fork 1000 times, verify all same-seed forks produce identical output
 
-### M11: QuickJS on Linux in VM (1-2 weeks)
+### M11: JS on Linux in VM (1-2 weeks) ✅ DONE (Boa instead of QuickJS)
 
 **Goal:** QuickJS evaluates JS through the full Linux stack. Validates that the kernel path works end-to-end before attempting V8.
 
@@ -459,7 +459,7 @@ just fork-linux --seed 42 --js 'console.log("hello from QuickJS on Linux!", Math
 # Running again with --seed 42 produces identical output
 ```
 
-### M12: V8 on Linux in VM (3-4 weeks)
+### M12: V8 on Linux in VM (3-4 weeks) ✅ DONE
 
 **Goal:** V8 boots inside the Linux VM and evaluates JS. This is the target configuration for Convex production.
 
@@ -598,3 +598,60 @@ Once V8 runs in a deterministic Linux VM with sub-millisecond fork:
 - **Deterministic re-execution.** Same function + same DB reads + same seed = identical execution. Enables OCC transaction replay, time-travel debugging, reproducible bug reports.
 - **Multi-language support.** Python, Go, Rust, Java — anything that runs on Linux runs in the VM. No per-language porting work. The determinism guarantee is provided by the VM, not the language runtime.
 - **Antithesis-style testing.** The same deterministic VM can be used for fault injection and property-based testing of Convex itself. Snapshot a known state, inject a fault (network partition, disk failure), verify invariants still hold, branch and explore.
+
+---
+
+## Actual results (as of March 2026)
+
+### What was built
+
+M9a-c, M10, M11, M12 are complete. M9d (virtio-vsock) was skipped — mailbox + pipe IPC proved sufficient for JS eval workloads.
+
+**Key implementation decisions that differed from the plan:**
+- Used a prebuilt cloud-hypervisor kernel (`Image-arm64`) instead of compiling our own
+- Used Boa (pure Rust) instead of rquickjs for M11 — QuickJS compiled with zig cc caused SIGBUS
+- Used mailbox + pipe IPC instead of virtio-vsock for guest-host communication
+- V8 runner is dynamically linked (glibc) not statically linked (musl)
+- Init is `no_std` Rust with raw syscalls, not musl-linked
+- Ready pipe protocol (fd 3) for signaling V8 initialization to init
+
+**Architecture: ready pipe + mailbox protocol:**
+1. Init creates two pipes (JS pipe + ready pipe), forks child, execs /runner
+2. Runner initializes JS engine, pre-loads /bundle.js if present
+3. Runner signals init via ready pipe (fd 3), blocks on stdin
+4. Init writes CONVEX_READY to mailbox → host snapshots
+5. After fork: host writes JS to mailbox, init re-mmaps fresh, pipes JS to runner
+6. Runner evals JS, prints result, calls PSCI SYSTEM_OFF
+
+### Performance (macOS M1, Hypervisor.framework)
+
+| Metric | Value |
+|--------|-------|
+| V8 fork + JS eval (simple) | **15ms** |
+| V8 fork + 460KB real npm bundle | **17ms** |
+| V8 fork + 10MB bundle (preloaded) | **16ms** |
+| Guest execution only | ~2ms |
+| CoW mmap (512 MiB) | ~11ms |
+| CPU/GIC restore | ~4ms |
+| Phase 1 bare-metal (for comparison) | 154µs |
+
+**Bundle preloading:** Including the JS bundle in the initramfs as `/bundle.js` lets V8 compile it during snapshot. After fork, only a tiny invocation string is sent. All bundle sizes (1KB-10MB) converge to the same ~15ms.
+
+**Optimization path to <1ms (Linux/KVM):**
+- CoW mmap (11ms) → eliminated by Zeroboot-style `fork()` (kernel CoW)
+- CPU restore (4ms) → eliminated by `fork()` (inherits vCPU state)
+- Guest execution (2ms) → irreducible
+- Total on KVM: expected **<5ms**, possibly **<1ms**
+
+### Milestone status
+
+| Milestone | Status | Notes |
+|-----------|--------|-------|
+| M9a: Kernel boots to earlycon | ✅ Done | DTB, GIC, PL011, PSCI all working |
+| M9b: Virtualized timer | ✅ Done | Adaptive event-driven clock, WFI warp |
+| M9c: Initramfs + userspace | ✅ Done | no_std init, Boa runner, V8 runner |
+| M9d: virtio-vsock | Skipped | Mailbox + pipe IPC sufficient |
+| M10: Snapshot + fork | ✅ Done | GIC/ICC/vtimer state save/restore |
+| M11: JS eval (Boa) | ✅ Done | Pure Rust, musl-static, ~15ms fork |
+| M12: V8 eval | ✅ Done | rusty_v8 146, glibc, zig cc, ~15ms fork |
+| M13: Containers | Not started | — |

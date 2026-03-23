@@ -1,9 +1,6 @@
-/target/
-guest/target/
-spike/target/
+**/target/
 **/rust-analyzer/
 *.o
 *.a
 /tmp/
 kernel/
-runner-js/target/

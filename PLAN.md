@@ -1,10 +1,13 @@
-# Convex hypervisor MVP: execution plan
+# Convex hypervisor MVP: execution plan (Phase 1 — Bare Metal)
+
+> **Status: Phase 1 complete (M0-M5).** This plan covers the bare-metal MVP with QuickJS.
+> For Phase 2 (Linux VM with V8), see [PLAN-LINUX.md](PLAN-LINUX.md).
 
 ## Goal
 
-Get a minimal "JS running deterministically in a hardware-isolated VM with hypercalls" demo working on a MacBook (aarch64 macOS). The guest is a `no_std` Rust ELF binary embedding Boa that evaluates user JS, with `console.log`, `Date.now()`, `Math.random()`, and a placeholder `db.query()` routed through hypercalls to the host. The host can fork new VMs from a snapshot in <1 ms.
+Get a minimal "JS running deterministically in a hardware-isolated VM with hypercalls" demo working on a MacBook (aarch64 macOS). The guest is a `no_std` Rust ELF binary embedding QuickJS that evaluates user JS, with `console.log`, `Date.now()`, `Math.random()`, and a placeholder `db.query()` routed through hypercalls to the host. The host can fork new VMs from a snapshot in <1 ms.
 
-This is the smallest thing that proves the full stack: hypervisor shell, guest micro-runtime, hypercall interface, determinism controls, and snapshot/fork. Everything after this (V8, multi-arch, Linux/KVM, micro-kernel, multi-language) is additive — the interfaces designed here don't change.
+This is the smallest thing that proves the full stack: hypervisor shell, guest micro-runtime, hypercall interface, determinism controls, and snapshot/fork. Phase 2 builds on this by booting a real Linux kernel inside the VM for full binary compatibility (V8, Python, Go, etc.).
 
 ## Non-goals for MVP
 

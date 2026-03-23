@@ -5,7 +5,11 @@ pub type HvReturn = i32;
 pub type HvVcpu = u64;
 pub type HvIpa = u64;
 pub type HvMemoryFlags = u64;
-pub type HvSimdFpUchar16 = [u8; 16];
+/// SIMD/FP register value. Must be 16-byte aligned to match
+/// hv_simd_fp_uchar16_t (ext_vector_type(16) uint8_t, align=16).
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct HvSimdFpUchar16(pub [u8; 16]);
 
 pub const HV_SUCCESS: HvReturn = 0;
 
@@ -311,6 +315,16 @@ pub unsafe fn vcpu_get_reg(vcpu: HvVcpu, reg: u32) -> u64 {
     let mut value: u64 = 0;
     check_hv(hv_vcpu_get_reg(vcpu, reg, &mut value), "hv_vcpu_get_reg");
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn simd_fp_type_layout() {
+        assert_eq!(std::mem::size_of::<HvSimdFpUchar16>(), 16);
+        assert_eq!(std::mem::align_of::<HvSimdFpUchar16>(), 16);
+    }
 }
 
 /// Convenience: get a system register value, panicking on error.

@@ -214,7 +214,7 @@ fn handle_patched_timer_hvc(
 
 /// Load kernel image, optional initrd, and generated DTB into a freshly
 /// allocated guest memory region.
-fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>) -> LoadedKernel {
+fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>, quiet: bool) -> LoadedKernel {
     let kernel_data = std::fs::read(kernel_path)
         .unwrap_or_else(|e| panic!("Failed to read kernel: {}", e));
     eprintln!("Kernel image: {} bytes", kernel_data.len());
@@ -287,7 +287,7 @@ fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>) -> Loa
     };
 
     // Generate DTB and place it near end of RAM
-    let dtb_data = dtb::build_dtb(GUEST_RAM_BASE, GUEST_RAM_SIZE, initrd_start, initrd_end);
+    let dtb_data = dtb::build_dtb(GUEST_RAM_BASE, GUEST_RAM_SIZE, initrd_start, initrd_end, quiet);
     let dtb_offset = ram_size - page_align(dtb_data.len());
     unsafe {
         ptr::copy_nonoverlapping(dtb_data.as_ptr(), mem.add(dtb_offset), dtb_data.len());
@@ -308,43 +308,80 @@ fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>) -> Loa
 }
 
 /// Spawn a watchdog thread that periodically forces VM exits so we can
-/// check status and inject timer interrupts.
-fn spawn_watchdog(vcpu: u64, duration_secs: u32) -> std::thread::JoinHandle<()> {
+/// check status and inject timer interrupts. Returns (handle, stop_flag).
+/// Set stop_flag to true to make the watchdog exit on its next iteration.
+fn spawn_watchdog(vcpu: u64, duration_secs: u32) -> (std::thread::JoinHandle<()>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_clone = stop.clone();
     let iterations = (duration_secs as u64) * 10; // 100ms per iteration
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         for _ in 0..iterations {
+            if stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(100));
             unsafe {
                 let mut vcpus = [vcpu];
                 hvf::hv_vcpus_exit(vcpus.as_mut_ptr(), 1);
             }
         }
-    })
+    });
+    (handle, stop)
 }
 
-/// Mailbox: 64 KiB at a fixed GPA **outside** the RAM region.
+/// Like spawn_watchdog but with 1ms sleep intervals for low-latency forks.
+fn spawn_watchdog_fast(vcpu: u64, duration_secs: u32) -> (std::thread::JoinHandle<()>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_clone = stop.clone();
+    let iterations = (duration_secs as u64) * 1000; // 1ms per iteration
+    let handle = std::thread::spawn(move || {
+        for _ in 0..iterations {
+            if stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            unsafe {
+                let mut vcpus = [vcpu];
+                hvf::hv_vcpus_exit(vcpus.as_mut_ptr(), 1);
+            }
+        }
+    });
+    (handle, stop)
+}
+
+/// Shared region at a fixed GPA **outside** the RAM region.
 /// Placed below RAM so the kernel doesn't include it in its memory map,
 /// allowing userspace to access it via /dev/mem without STRICT_DEVMEM blocking.
-/// Must match MAILBOX_GPA in init/src/main.rs.
-pub const LINUX_MAILBOX_GPA: u64 = 0x3FFF_0000;
-pub const LINUX_MAILBOX_SIZE: usize = 64 * 1024;
+///
+/// Layout: first 8 MiB = inbox (host→guest, JS code),
+///         second 8 MiB = outbox (guest→host, output capture).
+/// Must match INBOX_GPA/OUTBOX_GPA in init/src/main.rs.
+#[allow(dead_code)]
+pub const LINUX_INBOX_GPA: u64 = 0x3F00_0000;
+pub const LINUX_INBOX_SIZE: usize = 8 * 1024 * 1024;
+#[allow(dead_code)]
+pub const LINUX_OUTBOX_GPA: u64 = 0x3F80_0000; // inbox + 8 MiB
+#[allow(dead_code)]
+pub const LINUX_OUTBOX_SIZE: usize = 8 * 1024 * 1024;
+pub const LINUX_SHARED_GPA: u64 = 0x3F00_0000;
+pub const LINUX_SHARED_SIZE: usize = 16 * 1024 * 1024; // inbox + outbox mapped as one region
 
-/// Allocate and map the mailbox page into the VM at LINUX_MAILBOX_GPA.
-/// Returns the host pointer to the mailbox memory.
-fn setup_mailbox() -> *mut u8 {
-    let mailbox_mem = alloc_pages(LINUX_MAILBOX_SIZE);
+/// Allocate and map the shared region (inbox + outbox) into the VM.
+/// Returns the host pointer to the shared memory (16 MiB).
+fn setup_shared_region() -> *mut u8 {
+    let shared_mem = alloc_pages(LINUX_SHARED_SIZE);
     unsafe {
         check_hv(
             hvf::hv_vm_map(
-                mailbox_mem,
-                LINUX_MAILBOX_GPA,
-                LINUX_MAILBOX_SIZE,
+                shared_mem,
+                LINUX_SHARED_GPA,
+                LINUX_SHARED_SIZE,
                 hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE,
             ),
-            "hv_vm_map mailbox",
+            "hv_vm_map shared region",
         );
     }
-    mailbox_mem
+    shared_mem
 }
 
 /// Parse the MMIO access details from a data abort syndrome (ESR_EL2).
@@ -358,8 +395,7 @@ struct MmioAccess {
     len: usize,
     /// Destination/source register number (Rt)
     reg: u32,
-    /// Sign extend? (only for reads)
-    #[allow(dead_code)]
+    /// Sign extend? (only for reads: LDRSB, LDRSH, LDRSW)
     sign_extend: bool,
 }
 
@@ -391,8 +427,8 @@ fn decode_data_abort(syndrome: u64, ipa: u64) -> Option<MmioAccess> {
 }
 
 /// Boot a Linux kernel.
-pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
-    let loaded = load_kernel_and_initrd(kernel_path, initrd_path);
+pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>, quiet: bool) {
+    let loaded = load_kernel_and_initrd(kernel_path, initrd_path, quiet);
     let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr } = loaded;
 
     // Create VM
@@ -411,9 +447,9 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
         );
     }
 
-    // Create and configure GIC + mailbox
+    // Create and configure GIC + shared region
     setup_gic();
-    let _mailbox_mem = setup_mailbox();
+    let _shared_mem = setup_shared_region();
 
     // Create vCPU
     let mut vcpu: u64 = 0;
@@ -434,10 +470,11 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
 
     eprintln!("Starting Linux kernel...\n");
 
-    let watchdog = spawn_watchdog(vcpu, 10);
+    let (watchdog, watchdog_stop) = spawn_watchdog(vcpu, 10);
 
     // Run the vCPU loop
     let result = run_linux_vcpu_loop(vcpu, exit_ptr, mem, ram_size, &uart, &mut vtimer, None);
+    watchdog_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = watchdog.join();
 
     match result {
@@ -487,8 +524,9 @@ pub fn cmd_snapshot_linux(
     kernel_path: &Path,
     initrd_path: Option<&Path>,
     template_dir: &Path,
+    quiet: bool,
 ) {
-    let loaded = load_kernel_and_initrd(kernel_path, initrd_path);
+    let loaded = load_kernel_and_initrd(kernel_path, initrd_path, quiet);
     let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr } = loaded;
 
     // Create VM, GIC, vCPU
@@ -498,7 +536,7 @@ pub fn cmd_snapshot_linux(
             hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE | hvf::HV_MEMORY_EXEC), "hv_vm_map");
     }
     setup_gic();
-    let mailbox_mem = setup_mailbox();
+    let shared_mem = setup_shared_region();
 
     let mut vcpu: u64 = 0;
     let mut exit_ptr: *const hvf::HvVcpuExit = ptr::null();
@@ -512,12 +550,13 @@ pub fn cmd_snapshot_linux(
 
     eprintln!("Booting Linux to snapshot point...\n");
 
-    let watchdog = spawn_watchdog(vcpu, 30);
+    let (watchdog, watchdog_stop) = spawn_watchdog(vcpu, 30);
 
     let result = run_linux_vcpu_loop(
         vcpu, exit_ptr, mem, ram_size, &uart, &mut vtimer,
-        Some(mailbox_mem as *const u8),
+        Some(shared_mem as *const u8),
     );
+    watchdog_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = watchdog.join();
 
     match result {
@@ -579,9 +618,9 @@ pub fn cmd_snapshot_linux(
     std::fs::write(template_dir.join("timer.meta"), &timer_meta).expect("write timer.meta");
     eprintln!("Timer: offset={} guest_counter={}", vtimer_offset, guest_counter_at_snapshot);
 
-    // Mailbox memory (separate from guest RAM since it's at a different GPA)
-    let mailbox_bytes = unsafe { std::slice::from_raw_parts(mailbox_mem, LINUX_MAILBOX_SIZE) };
-    std::fs::write(template_dir.join("mailbox.mem"), mailbox_bytes).expect("write mailbox.mem");
+    // Shared region memory (separate from guest RAM since it's at a different GPA)
+    let shared_bytes = unsafe { std::slice::from_raw_parts(shared_mem, LINUX_SHARED_SIZE) };
+    std::fs::write(template_dir.join("shared.mem"), shared_bytes).expect("write shared.mem");
 
     // Cleanup
     unsafe {
@@ -598,18 +637,18 @@ pub fn cmd_snapshot_linux(
     );
 }
 
-/// Fork from a Linux VM template: CoW mmap, restore state, write mailbox, run.
-pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
+/// Fork from a Linux VM template: CoW mmap, restore state, write inbox, run, read outbox.
+pub fn cmd_fork_linux(template_dir: &Path, inbox_data: &[u8]) {
     let template = Template::load(template_dir);
     let mem = template.mmap_cow_memory();
     let ram_size = template.mem_size;
 
-    // Allocate mailbox memory and write per-fork data
-    let mailbox_mem = alloc_pages(LINUX_MAILBOX_SIZE);
-    assert!(mailbox_data.len() < LINUX_MAILBOX_SIZE, "mailbox data too large");
+    // Allocate shared region and write per-fork data to the inbox
+    let shared_mem = alloc_pages(LINUX_SHARED_SIZE);
+    assert!(inbox_data.len() < LINUX_INBOX_SIZE, "inbox data too large");
     unsafe {
-        ptr::copy_nonoverlapping(mailbox_data.as_ptr(), mailbox_mem, mailbox_data.len());
-        *mailbox_mem.add(mailbox_data.len()) = 0; // null-terminate
+        ptr::copy_nonoverlapping(inbox_data.as_ptr(), shared_mem, inbox_data.len());
+        *shared_mem.add(inbox_data.len()) = 0; // null-terminate
     }
 
     // Create VM
@@ -619,10 +658,10 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
             hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE | hvf::HV_MEMORY_EXEC), "hv_vm_map fork");
     }
 
-    // Map mailbox at its own GPA
+    // Map shared region (inbox + outbox) at its own GPA
     unsafe {
-        check_hv(hvf::hv_vm_map(mailbox_mem, LINUX_MAILBOX_GPA, LINUX_MAILBOX_SIZE,
-            hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE), "hv_vm_map mailbox fork");
+        check_hv(hvf::hv_vm_map(shared_mem, LINUX_SHARED_GPA, LINUX_SHARED_SIZE,
+            hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE), "hv_vm_map shared fork");
     }
 
     // Create GIC (must exist before vCPU and before set_state)
@@ -686,17 +725,18 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
         // Step 3: Unmask vtimer
         check_hv(hvf::hv_vcpu_set_vtimer_mask(vcpu, false), "unmask vtimer fork");
     }
-
     let uart = Pl011::new(dtb::UART_BASE);
     let mut vtimer = VirtualTimer::new();
 
-    // Watchdog forces periodic VM exits. On each exit we unmask the vtimer
-    // and ensure a timer interrupt fires, keeping the kernel scheduler alive.
-    // V8 init can take 10+ seconds with thread creation.
-    let watchdog = spawn_watchdog(vcpu, 300);
+    // For pre-initialized V8 forks, the guest runs quickly to completion
+    // (just pipe read + eval + exit). Use a short-interval watchdog to keep
+    // the kernel scheduler alive without adding 100ms of join latency.
+    let (watchdog, watchdog_stop) = spawn_watchdog_fast(vcpu, 300);
 
     // Run to completion
     let result = run_linux_vcpu_loop(vcpu, exit_ptr, mem, ram_size, &uart, &mut vtimer, None);
+
+    watchdog_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = watchdog.join();
 
     match result {
@@ -710,12 +750,31 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
         VmExitReason::Error(e) => eprintln!("VM error: {}", e),
     }
 
+    // Read outbox (null-terminated string at shared_mem + INBOX_SIZE offset)
+    let outbox_ptr = unsafe { shared_mem.add(LINUX_INBOX_SIZE) };
+    let mut outbox_len = 0usize;
+    unsafe {
+        while outbox_len < LINUX_OUTBOX_SIZE && *outbox_ptr.add(outbox_len) != 0 {
+            outbox_len += 1;
+        }
+    }
+    if outbox_len > 0 {
+        let outbox_bytes = unsafe { std::slice::from_raw_parts(outbox_ptr, outbox_len) };
+        use std::io::Write;
+        std::io::stdout().write_all(outbox_bytes).ok();
+        // Ensure trailing newline
+        if outbox_bytes.last() != Some(&b'\n') {
+            std::io::stdout().write_all(b"\n").ok();
+        }
+        std::io::stdout().flush().ok();
+    }
+
     // Cleanup
     unsafe {
         check_hv(hvf::hv_vcpu_destroy(vcpu), "hv_vcpu_destroy");
         check_hv(hvf::hv_vm_destroy(), "hv_vm_destroy");
         libc::munmap(mem as *mut libc::c_void, ram_size);
-        libc::munmap(mailbox_mem as *mut libc::c_void, LINUX_MAILBOX_SIZE);
+        libc::munmap(shared_mem as *mut libc::c_void, LINUX_SHARED_SIZE);
     }
 }
 
@@ -1051,11 +1110,11 @@ fn run_linux_vcpu_loop(
             hvf::HV_EXIT_REASON_CANCELED => {
                 canceled_count += 1;
                 // Forced exit from watchdog thread.
-                // Check if init has written READY to the mailbox.
+                // Check if init has written READY to the inbox.
                 if let Some(mbox) = mailbox_ptr {
                     let content = unsafe { std::slice::from_raw_parts(mbox, 12) };
                     if content == b"CONVEX_READY" {
-                        eprintln!("Init signaled READY via mailbox");
+                        eprintln!("Init signaled READY via inbox");
                         print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
                         return VmExitReason::Ready;
                     }
@@ -1097,6 +1156,31 @@ fn run_linux_vcpu_loop(
     }
 }
 
+/// Read the value a guest store instruction wants to write.
+/// SRT==31 in data-abort syndrome means XZR (always 0), not PC.
+unsafe fn mmio_read_reg(vcpu: u64, srt: u32) -> u64 {
+    if srt == 31 { 0 } else { hvf::vcpu_get_reg(vcpu, srt) }
+}
+
+/// Write the result of a guest load instruction.
+/// SRT==31 means XZR — the write is discarded.
+/// If `sign_extend` is true, sign-extends from `access_size` bytes
+/// (for LDRSB, LDRSH, LDRSW MMIO loads).
+unsafe fn mmio_write_reg(vcpu: u64, srt: u32, value: u64, sign_extend: bool, access_size: usize) {
+    if srt == 31 { return; }
+    let final_value = if sign_extend {
+        match access_size {
+            1 => value as u8 as i8 as i64 as u64,   // LDRSB
+            2 => value as u16 as i16 as i64 as u64,  // LDRSH
+            4 => value as u32 as i32 as i64 as u64,  // LDRSW
+            _ => value,
+        }
+    } else {
+        value
+    };
+    check_hv(hvf::hv_vcpu_set_reg(vcpu, srt, final_value), "set reg from MMIO");
+}
+
 fn handle_mmio(
     vcpu: u64,
     access: &MmioAccess,
@@ -1105,16 +1189,11 @@ fn handle_mmio(
     if uart.contains(access.addr) {
         let offset = access.addr - uart.base_addr;
         if access.is_write {
-            let value = unsafe { hvf::vcpu_get_reg(vcpu, access.reg) };
+            let value = unsafe { mmio_read_reg(vcpu, access.reg) };
             uart.write(offset, value, access.len);
         } else {
             let value = uart.read(offset, access.len);
-            unsafe {
-                check_hv(
-                    hvf::hv_vcpu_set_reg(vcpu, access.reg, value),
-                    "set reg from MMIO read",
-                );
-            }
+            unsafe { mmio_write_reg(vcpu, access.reg, value, access.sign_extend, access.len); }
         }
     } else {
         // Unknown MMIO region — log once and return 0 for reads
@@ -1132,12 +1211,7 @@ fn handle_mmio(
             );
         }
         if !access.is_write {
-            unsafe {
-                check_hv(
-                    hvf::hv_vcpu_set_reg(vcpu, access.reg, 0),
-                    "set reg from unknown MMIO",
-                );
-            }
+            unsafe { mmio_write_reg(vcpu, access.reg, 0, access.sign_extend, access.len); }
         }
     }
 

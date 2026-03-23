@@ -3,6 +3,112 @@ guest_bin := "guest/target/aarch64-unknown-none/release/convex-guest"
 template_dir := "/tmp/hvf-template"
 host_bin := "./target/release/convex-hypervisor"
 
+init_bin := "init/target/aarch64-unknown-none/release/convex-init"
+runner_js_bin := "runner-js/target/aarch64-unknown-linux-musl/release/convex-runner-js"
+runner_v8_bin := "runner-v8/target/aarch64-unknown-linux-gnu/release/convex-runner-v8"
+initramfs := "/tmp/hvf-initramfs.cpio"
+linux_kernel := "kernel/Image-arm64"
+linux_template := "/tmp/hvf-linux-template"
+
+# ── Top-level commands (all-in-one) ──────────────────────────────────────────
+
+# Build init + boa runner, make initramfs, snapshot. All-in-one.
+snapshot-boa: build-init build-runner-js
+    ./scripts/mkinitramfs.sh {{init_bin}} {{initramfs}} {{runner_js_bin}}
+    just build-host
+    {{host_bin}} snapshot-linux {{linux_kernel}} --initrd {{initramfs}} --quiet {{linux_template}}
+
+# Build host, codesign, fork with message (boa)
+fork-boa msg: build-host
+    {{host_bin}} fork-linux --msg '{{msg}}' {{linux_template}}
+
+# Build init + v8 runner, make initramfs (with glibc libs), snapshot
+snapshot-v8: build-init build-runner-v8
+    just _initramfs-v8
+    just build-host
+    {{host_bin}} snapshot-linux {{linux_kernel}} --initrd {{initramfs}} --quiet {{linux_template}}
+
+# Build host, codesign, fork with message (v8)
+fork-v8 msg: build-host
+    {{host_bin}} fork-linux --msg '{{msg}}' {{linux_template}}
+
+# Fork with --js-file (v8)
+fork-v8-file path: build-host
+    {{host_bin}} fork-linux --js-file '{{path}}' {{linux_template}}
+
+# ── Lower-level build recipes (fast iteration) ──────────────────────────────
+
+# Build and codesign the host binary only
+build-host: (_build-and-sign "convex-hypervisor" "convex-hypervisor")
+
+# Build the init binary (PID 1 for the Linux VM)
+build-init:
+    cd init && cargo build --release --target aarch64-unknown-none
+
+# Build the Boa JS runner (musl-static)
+build-runner-js:
+    cd runner-js && cargo build --target aarch64-unknown-linux-musl --release
+
+# Build the V8 runner (glibc, needs zig on PATH)
+build-runner-v8:
+    cd runner-v8 && CC_aarch64_unknown_linux_gnu=$(pwd)/../scripts/zig-gnu-cc \
+        CXX_aarch64_unknown_linux_gnu=$(pwd)/../scripts/zig-gnu-cc \
+        AR_aarch64_unknown_linux_gnu="zig ar" \
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=$(pwd)/../scripts/zig-gnu-cc \
+        cargo build --target aarch64-unknown-linux-gnu --release
+
+# ── Initramfs recipes ───────────────────────────────────────────────────────
+
+# Build initramfs from init only (no runner)
+initramfs: build-init
+    ./scripts/mkinitramfs.sh {{init_bin}} {{initramfs}}
+
+# Build initramfs with Boa JS runner
+initramfs-js: build-init build-runner-js
+    ./scripts/mkinitramfs.sh {{init_bin}} {{initramfs}} {{runner_js_bin}}
+
+# Build initramfs with V8 runner + glibc libs
+_initramfs-v8:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TMPDIR=$(mktemp -d)
+    trap "rm -rf $TMPDIR" EXIT
+    mkdir -p "$TMPDIR"/{dev,proc,sys,tmp,lib}
+    cp {{init_bin}} "$TMPDIR/init"
+    chmod 755 "$TMPDIR/init"
+    cp {{runner_v8_bin}} "$TMPDIR/runner"
+    chmod 755 "$TMPDIR/runner"
+    # Extract glibc shared libs from zig's sysroot
+    ZIG_LIB=$(zig env | grep lib_dir | head -1 | sed 's/.*": "//;s/".*//')
+    SYSROOT="$ZIG_LIB/libc/glibc"
+    # Copy the zig-provided glibc stubs + ld-linux
+    ZIG_GLIBC="$ZIG_LIB/aarch64-linux-gnu-musl"
+    if [ -d "$ZIG_LIB/aarch64-linux-gnu" ]; then
+        ZIG_GLIBC="$ZIG_LIB/aarch64-linux-gnu"
+    fi
+    # Use ldd-like approach: copy what the binary needs
+    # For zig-linked binaries, the needed libs are in zig's sysroot
+    for lib in ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 libgcc_s.so.1 libstdc++.so.6; do
+        found=""
+        for search in "$ZIG_LIB"/aarch64-linux-gnu*/ "$ZIG_LIB"/libc/glibc/ /usr/aarch64-linux-gnu/lib/; do
+            if [ -f "$search/$lib" ]; then
+                cp "$search/$lib" "$TMPDIR/lib/"
+                found=1
+                break
+            fi
+        done
+        # Not fatal if a lib is missing — the binary may not need it
+    done
+    # Also check for libs in the zig lib dir itself
+    if [ -f "$ZIG_LIB/ld-linux-aarch64.so.1" ]; then
+        cp "$ZIG_LIB/ld-linux-aarch64.so.1" "$TMPDIR/lib/"
+    fi
+    cd "$TMPDIR"
+    find . | cpio -o -H newc --quiet > {{initramfs}}
+    echo "initramfs (v8): $(du -h {{initramfs}} | cut -f1)"
+
+# ── Legacy / existing recipes ───────────────────────────────────────────────
+
 # Build everything and run the guest directly (no snapshot)
 run *args: guest (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     {{host_bin}} run {{args}} {{guest_bin}}
@@ -43,39 +149,13 @@ demo: guest (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     @echo "  Demo complete!"
     @echo "═══════════════════════════════════════════════════"
 
-init_bin := "init/target/aarch64-unknown-none/release/convex-init"
-runner_js_bin := "runner-js/target/aarch64-unknown-linux-musl/release/convex-runner-js"
-initramfs := "/tmp/hvf-initramfs.cpio"
-linux_kernel := "kernel/Image-arm64"
-linux_template := "/tmp/hvf-linux-template"
-
 # Boot a Linux kernel in the VM (kernel only, no initramfs)
 boot-linux kernel *args: (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     {{host_bin}} boot-linux {{kernel}} {{args}}
 
-# Build the init binary (PID 1 for the Linux VM)
-init:
-    cd init && cargo build --release --target aarch64-unknown-none
-
-# Build the JS runner (Boa engine, musl-static)
-runner-js:
-    cd runner-js && cargo build --target aarch64-unknown-linux-musl --release
-
-# Build initramfs from the init binary (no runner)
-initramfs: init
-    ./scripts/mkinitramfs.sh {{init_bin}} {{initramfs}}
-
-# Build initramfs with JS runner
-initramfs-js: init runner-js
-    ./scripts/mkinitramfs.sh {{init_bin}} {{initramfs}} {{runner_js_bin}}
-
-# Boot Linux with initramfs (no snapshot)
-boot: initramfs (_build-and-sign "convex-hypervisor" "convex-hypervisor")
-    {{host_bin}} boot-linux {{linux_kernel}} --initrd {{initramfs}}
-
 # Snapshot: boot Linux to HC_READY, save template (with JS runner)
 snapshot-linux: initramfs-js (_build-and-sign "convex-hypervisor" "convex-hypervisor")
-    {{host_bin}} snapshot-linux {{linux_kernel}} --initrd {{initramfs}} {{linux_template}}
+    {{host_bin}} snapshot-linux {{linux_kernel}} --initrd {{initramfs}} --quiet {{linux_template}}
 
 # Fork: resume from snapshot with a message
 fork-linux *args: (_build-and-sign "convex-hypervisor" "convex-hypervisor")

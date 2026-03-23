@@ -23,11 +23,13 @@ pub const UART_SPI: u32 = 1;
 ///
 /// `mem_base` and `mem_size`: guest RAM region.
 /// `initrd_start`, `initrd_end`: optional initramfs location in guest memory.
+/// `quiet`: if true, append `quiet loglevel=0` to bootargs.
 pub fn build_dtb(
     mem_base: u64,
     mem_size: u64,
     initrd_start: Option<u64>,
     initrd_end: Option<u64>,
+    quiet: bool,
 ) -> Vec<u8> {
     let mut fdt = FdtWriter::new().expect("FdtWriter::new");
 
@@ -159,8 +161,7 @@ pub fn build_dtb(
     // Chosen node — boot args + stdout
     {
         let chosen = fdt.begin_node("chosen").expect("begin chosen");
-        fdt.property_string(
-            "bootargs",
+        let mut bootargs = String::from(
             "earlycon=pl011,mmio32,0x09000000 \
              nokaslr \
              norandmaps \
@@ -170,10 +171,13 @@ pub fn build_dtb(
              nohz=off \
              console=ttyAMA0 \
              lpj=50000 \
-             rdinit=/init \
-",
-        )
-        .expect("bootargs");
+             rdinit=/init",
+        );
+        if quiet {
+            bootargs.push_str(" quiet loglevel=0");
+        }
+        fdt.property_string("bootargs", &bootargs)
+            .expect("bootargs");
         fdt.property_string("stdout-path", &format!("/pl011@{:x}", UART_BASE))
             .expect("stdout-path");
         if let (Some(start), Some(end)) = (initrd_start, initrd_end) {
