@@ -1,4 +1,6 @@
-# Convex Hypervisor
+# Laplace
+
+*Named after [Laplace's demon](https://en.wikipedia.org/wiki/Laplace%27s_demon) — the thought experiment that a being with perfect knowledge of every particle's state could predict the future with certainty. Laplace controls every hardware input to the VM (time, entropy, interrupts, CPU identity), making execution perfectly deterministic. And like any good systems project, it runs as a daemon.*
 
 A lightweight hypervisor for running JavaScript in hardware-isolated VMs with deterministic execution and sub-20ms cold starts. Built on Apple Hypervisor.framework (aarch64 macOS), with a path to Linux/KVM for production.
 
