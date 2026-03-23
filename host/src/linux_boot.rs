@@ -26,6 +26,31 @@ const KERNEL_OFFSET: u64 = 0x8_0000;
 /// DTB is placed near the top of RAM (last 2 MiB)
 const DTB_MAX_SIZE: usize = 2 * 1024 * 1024;
 
+/// Mailbox: 64 KiB at a fixed GPA **outside** the RAM region.
+/// Placed below RAM so the kernel doesn't include it in its memory map,
+/// allowing userspace to access it via /dev/mem without STRICT_DEVMEM blocking.
+/// Must match MAILBOX_GPA in init/src/main.rs.
+pub const LINUX_MAILBOX_GPA: u64 = 0x3FFF_0000;
+pub const LINUX_MAILBOX_SIZE: usize = 64 * 1024;
+
+/// Allocate and map the mailbox page into the VM at LINUX_MAILBOX_GPA.
+/// Returns the host pointer to the mailbox memory.
+fn setup_mailbox() -> *mut u8 {
+    let mailbox_mem = alloc_pages(LINUX_MAILBOX_SIZE);
+    unsafe {
+        check_hv(
+            hvf::hv_vm_map(
+                mailbox_mem,
+                LINUX_MAILBOX_GPA,
+                LINUX_MAILBOX_SIZE,
+                hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE,
+            ),
+            "hv_vm_map mailbox",
+        );
+    }
+    mailbox_mem
+}
+
 /// Parse the MMIO access details from a data abort syndrome (ESR_EL2).
 /// EC=0x24 (data abort from lower EL) is expected.
 struct MmioAccess {
@@ -163,8 +188,9 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
         );
     }
 
-    // Create and configure GIC
+    // Create and configure GIC + mailbox
     setup_gic();
+    let _mailbox_mem = setup_mailbox();
 
     // Create vCPU
     let mut vcpu: u64 = 0;
@@ -199,14 +225,274 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
     });
 
     // Run the vCPU loop
-    run_linux_vcpu_loop(vcpu, exit_ptr, mem, ram_size, &uart, &mut vtimer);
+    let result = run_linux_vcpu_loop(vcpu, exit_ptr, mem, ram_size, &uart, &mut vtimer, None);
     let _ = watchdog.join();
+
+    match result {
+        VmExitReason::Ready => eprintln!("VM reached HC_READY (use snapshot-linux to save)"),
+        VmExitReason::Exit(code) => eprintln!("VM exited with code {}", code),
+        VmExitReason::SystemOff => eprintln!("VM powered off"),
+        VmExitReason::Error(e) => eprintln!("VM error: {}", e),
+    }
 
     // Cleanup
     unsafe {
         check_hv(hvf::hv_vcpu_destroy(vcpu), "hv_vcpu_destroy");
         check_hv(hvf::hv_vm_destroy(), "hv_vm_destroy");
         libc::munmap(mem as *mut libc::c_void, ram_size);
+    }
+}
+
+// ── Snapshot/Fork ─────────────────────────────────────────────────────────────
+
+use crate::snapshot::{CpuState, Template};
+
+/// Save GIC state to a byte vector.
+fn save_gic_state() -> Vec<u8> {
+    unsafe {
+        let state = hvf::hv_gic_state_create();
+        assert!(!state.is_null(), "hv_gic_state_create returned null");
+
+        let mut size: usize = 0;
+        check_hv(
+            hvf::hv_gic_state_get_size(state, &mut size),
+            "hv_gic_state_get_size",
+        );
+
+        let mut data = vec![0u8; size];
+        check_hv(
+            hvf::hv_gic_state_get_data(state, data.as_mut_ptr()),
+            "hv_gic_state_get_data",
+        );
+
+        eprintln!("GIC state: {} bytes", size);
+        data
+    }
+}
+
+/// Boot Linux, run to HC_READY, snapshot, then destroy the VM.
+pub fn cmd_snapshot_linux(
+    kernel_path: &Path,
+    initrd_path: Option<&Path>,
+    template_dir: &Path,
+) {
+    let kernel_data = std::fs::read(kernel_path)
+        .unwrap_or_else(|e| panic!("Failed to read kernel: {}", e));
+    eprintln!("Kernel image: {} bytes", kernel_data.len());
+
+    let initrd_data = initrd_path.map(|p| {
+        let data = std::fs::read(p).unwrap_or_else(|e| panic!("Failed to read initrd: {}", e));
+        eprintln!("Initrd: {} bytes", data.len());
+        data
+    });
+
+    let ram_size = page_align(GUEST_RAM_SIZE as usize);
+    let mem = alloc_pages(ram_size);
+
+    // Load kernel
+    let kernel_load_offset = KERNEL_OFFSET as usize;
+    let kernel_image_size = if kernel_data.len() >= 0x18 {
+        u64::from_le_bytes(kernel_data[0x10..0x18].try_into().unwrap()) as usize
+    } else {
+        kernel_data.len()
+    };
+    assert!(kernel_load_offset + kernel_data.len() < ram_size);
+    unsafe {
+        ptr::copy_nonoverlapping(kernel_data.as_ptr(), mem.add(kernel_load_offset), kernel_data.len());
+    }
+    let kernel_entry = GUEST_RAM_BASE + KERNEL_OFFSET;
+
+    // Load initrd
+    let (initrd_start, initrd_end) = if let Some(ref initrd) = initrd_data {
+        let initrd_offset = page_align(kernel_load_offset + kernel_image_size);
+        assert!(initrd_offset + initrd.len() < ram_size - DTB_MAX_SIZE);
+        unsafe { ptr::copy_nonoverlapping(initrd.as_ptr(), mem.add(initrd_offset), initrd.len()); }
+        let start = GUEST_RAM_BASE + initrd_offset as u64;
+        (Some(start), Some(start + initrd.len() as u64))
+    } else {
+        (None, None)
+    };
+
+    // Generate and place DTB
+    let dtb_data = dtb::build_dtb(GUEST_RAM_BASE, GUEST_RAM_SIZE, initrd_start, initrd_end);
+    let dtb_offset = ram_size - page_align(dtb_data.len());
+    unsafe { ptr::copy_nonoverlapping(dtb_data.as_ptr(), mem.add(dtb_offset), dtb_data.len()); }
+    let dtb_addr = GUEST_RAM_BASE + dtb_offset as u64;
+
+    // Create VM, GIC, vCPU
+    unsafe { check_hv(hvf::hv_vm_create(ptr::null()), "hv_vm_create"); }
+    unsafe {
+        check_hv(hvf::hv_vm_map(mem, GUEST_RAM_BASE, ram_size,
+            hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE | hvf::HV_MEMORY_EXEC), "hv_vm_map");
+    }
+    setup_gic();
+    let mailbox_mem = setup_mailbox();
+
+    let mut vcpu: u64 = 0;
+    let mut exit_ptr: *const hvf::HvVcpuExit = ptr::null();
+    unsafe {
+        check_hv(hvf::hv_vcpu_create(&mut vcpu, &mut exit_ptr, ptr::null()), "hv_vcpu_create");
+    }
+    setup_cpu_for_linux(vcpu, kernel_entry, dtb_addr);
+
+    let uart = Pl011::new(dtb::UART_BASE);
+    let mut vtimer = VirtualTimer::new();
+
+    eprintln!("Booting Linux to snapshot point...\n");
+
+    // Watchdog for timer delivery during boot
+    let vcpu_copy = vcpu;
+    let watchdog = std::thread::spawn(move || {
+        for _ in 0..300 { // 30 seconds max
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            unsafe {
+                let mut vcpus = [vcpu_copy];
+                hvf::hv_vcpus_exit(vcpus.as_mut_ptr(), 1);
+            }
+        }
+    });
+
+    let result = run_linux_vcpu_loop(
+        vcpu, exit_ptr, mem, ram_size, &uart, &mut vtimer,
+        Some(mailbox_mem as *const u8),
+    );
+    let _ = watchdog.join();
+
+    match result {
+        VmExitReason::Ready => eprintln!("Init signaled READY"),
+        VmExitReason::SystemOff => panic!("VM halted before signaling READY"),
+        VmExitReason::Exit(c) => panic!("VM exited with code {} before READY", c),
+        VmExitReason::Error(e) => panic!("VM error before READY: {}", e),
+    }
+
+    // Save CPU state
+    let cpu_state = unsafe { CpuState::capture(vcpu) };
+
+    // Save GIC state
+    let gic_state = save_gic_state();
+
+    // Write template
+    std::fs::create_dir_all(template_dir).expect("create template dir");
+
+    // Guest memory
+    let mem_path = template_dir.join("guest.mem");
+    let mem_bytes = unsafe { std::slice::from_raw_parts(mem, ram_size) };
+    std::fs::write(&mem_path, mem_bytes).expect("write guest.mem");
+
+    // CPU state
+    let template = Template {
+        cpu_state,
+        mem_path: mem_path.clone(),
+        mem_size: ram_size,
+        guest_base: GUEST_RAM_BASE,
+    };
+    template.save(template_dir);
+
+    // GIC state
+    std::fs::write(template_dir.join("gic.state"), &gic_state).expect("write gic.state");
+
+    // Mailbox memory (separate from guest RAM since it's at a different GPA)
+    let mailbox_bytes = unsafe { std::slice::from_raw_parts(mailbox_mem, LINUX_MAILBOX_SIZE) };
+    std::fs::write(template_dir.join("mailbox.mem"), mailbox_bytes).expect("write mailbox.mem");
+
+    // Cleanup
+    unsafe {
+        check_hv(hvf::hv_vcpu_destroy(vcpu), "hv_vcpu_destroy");
+        check_hv(hvf::hv_vm_destroy(), "hv_vm_destroy");
+        libc::munmap(mem as *mut libc::c_void, ram_size);
+    }
+
+    eprintln!(
+        "Template saved to {}/ (mem={:.1} MiB, gic={} bytes)",
+        template_dir.display(),
+        ram_size as f64 / (1024.0 * 1024.0),
+        gic_state.len(),
+    );
+}
+
+/// Fork from a Linux VM template: CoW mmap, restore state, write mailbox, run.
+pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
+    let template = Template::load(template_dir);
+    let mem = template.mmap_cow_memory();
+    let ram_size = template.mem_size;
+
+    // Allocate mailbox memory and write per-fork data
+    let mailbox_mem = alloc_pages(LINUX_MAILBOX_SIZE);
+    assert!(mailbox_data.len() < LINUX_MAILBOX_SIZE, "mailbox data too large");
+    unsafe {
+        ptr::copy_nonoverlapping(mailbox_data.as_ptr(), mailbox_mem, mailbox_data.len());
+        *mailbox_mem.add(mailbox_data.len()) = 0; // null-terminate
+    }
+
+    // Create VM
+    unsafe { check_hv(hvf::hv_vm_create(ptr::null()), "hv_vm_create fork"); }
+    unsafe {
+        check_hv(hvf::hv_vm_map(mem, GUEST_RAM_BASE, ram_size,
+            hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE | hvf::HV_MEMORY_EXEC), "hv_vm_map fork");
+    }
+
+    // Map mailbox at its own GPA
+    unsafe {
+        check_hv(hvf::hv_vm_map(mailbox_mem, LINUX_MAILBOX_GPA, LINUX_MAILBOX_SIZE,
+            hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE), "hv_vm_map mailbox fork");
+    }
+
+    // Set up GIC and restore its state
+    setup_gic();
+    let gic_state = std::fs::read(template_dir.join("gic.state")).expect("read gic.state");
+    unsafe {
+        check_hv(
+            hvf::hv_gic_set_state(gic_state.as_ptr(), gic_state.len()),
+            "hv_gic_set_state",
+        );
+    }
+
+    // Create vCPU and restore CPU state
+    let mut vcpu: u64 = 0;
+    let mut exit_ptr: *const hvf::HvVcpuExit = ptr::null();
+    unsafe {
+        check_hv(hvf::hv_vcpu_create(&mut vcpu, &mut exit_ptr, ptr::null()), "hv_vcpu_create fork");
+        check_hv(hvf::hv_vcpu_set_sys_reg(vcpu, hvf::HV_SYS_REG_MPIDR_EL1, 0x8000_0000), "set MPIDR");
+        template.cpu_state.restore(vcpu);
+        check_hv(hvf::hv_vcpu_set_vtimer_mask(vcpu, false), "unmask vtimer fork");
+    }
+
+    let uart = Pl011::new(dtb::UART_BASE);
+    let mut vtimer = VirtualTimer::new();
+
+    // Watchdog to force periodic exits (needed for timer interrupt delivery)
+    let vcpu_copy = vcpu;
+    let watchdog = std::thread::spawn(move || {
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            unsafe {
+                let mut vcpus = [vcpu_copy];
+                hvf::hv_vcpus_exit(vcpus.as_mut_ptr(), 1);
+            }
+        }
+    });
+
+    // Run to completion
+    let result = run_linux_vcpu_loop(vcpu, exit_ptr, mem, ram_size, &uart, &mut vtimer, None);
+    let _ = watchdog.join();
+
+    match result {
+        VmExitReason::Exit(code) => {
+            if code != 0 {
+                eprintln!("VM exited with code {}", code);
+            }
+        }
+        VmExitReason::SystemOff => {}
+        VmExitReason::Ready => eprintln!("Unexpected HC_READY in forked VM"),
+        VmExitReason::Error(e) => eprintln!("VM error: {}", e),
+    }
+
+    // Cleanup
+    unsafe {
+        check_hv(hvf::hv_vcpu_destroy(vcpu), "hv_vcpu_destroy");
+        check_hv(hvf::hv_vm_destroy(), "hv_vm_destroy");
+        libc::munmap(mem as *mut libc::c_void, ram_size);
+        libc::munmap(mailbox_mem as *mut libc::c_void, LINUX_MAILBOX_SIZE);
     }
 }
 
@@ -278,14 +564,27 @@ fn setup_cpu_for_linux(vcpu: u64, kernel_entry: u64, dtb_addr: u64) {
     }
 }
 
+/// Why the vCPU loop terminated.
+pub enum VmExitReason {
+    /// Guest called HC_READY (snapshot point)
+    Ready,
+    /// Guest called HC_EXIT with an exit code
+    Exit(u64),
+    /// PSCI SYSTEM_OFF or SYSTEM_RESET
+    SystemOff,
+    /// Too many exits or unexpected error
+    Error(String),
+}
+
 fn run_linux_vcpu_loop(
     vcpu: u64,
     exit_ptr: *const hvf::HvVcpuExit,
     guest_mem: *mut u8,
-    _mem_size: usize,
+    mem_size: usize,
     uart: &Pl011,
     vtimer: &mut VirtualTimer,
-) {
+    mailbox_ptr: Option<*const u8>,
+) -> VmExitReason {
     let mut exit_count: u64 = 0;
     let mut mmio_count: u64 = 0;
     let mut hvc_count: u64 = 0;
@@ -304,7 +603,7 @@ fn run_linux_vcpu_loop(
         if exit_count > 10_000_000 {
             eprintln!("Too many exits, aborting");
             print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
-            return;
+            return VmExitReason::Error("too many exits".into());
         }
         // Check for pending timer interrupt before entry
         if vtimer.check_pending() {
@@ -341,7 +640,16 @@ fn run_linux_vcpu_loop(
                         let x0 = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_X0) };
                         let x1 = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_X1) };
 
-                        if let Some(result) = psci::handle_psci(x0 as u32, x1) {
+                        // Check our hypercall IDs first
+                        if x0 == convex_shared::HC_READY {
+                            eprintln!("Guest signaled HC_READY (snapshot point)");
+                            print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
+                            return VmExitReason::Ready;
+                        } else if x0 == convex_shared::HC_EXIT {
+                            let exit_code = x1;
+                            print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
+                            return VmExitReason::Exit(exit_code);
+                        } else if let Some(result) = psci::handle_psci(x0 as u32, x1) {
                             match result {
                                 psci::PsciResult::Return(val) => unsafe {
                                     check_hv(
@@ -352,12 +660,12 @@ fn run_linux_vcpu_loop(
                                 psci::PsciResult::SystemOff => {
                                     eprintln!("\nPSCI SYSTEM_OFF");
                                     print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
-                                    return;
+                                    return VmExitReason::SystemOff;
                                 }
                                 psci::PsciResult::SystemReset => {
                                     eprintln!("\nPSCI SYSTEM_RESET");
                                     print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
-                                    return;
+                                    return VmExitReason::SystemOff;
                                 }
                             }
                         } else {
@@ -446,7 +754,7 @@ fn run_linux_vcpu_loop(
                             ec, syndrome, pc, ipa, esr,
                         );
                         print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
-                        return;
+                        return VmExitReason::Error(format!("unexpected exception EC=0x{:x}", ec));
                     }
                 }
             }
@@ -470,7 +778,16 @@ fn run_linux_vcpu_loop(
             }
 
             hvf::HV_EXIT_REASON_CANCELED => {
-                // Forced exit from watchdog thread — just continue.
+                // Forced exit from watchdog thread.
+                // Check if init has written READY to the mailbox.
+                if let Some(mbox) = mailbox_ptr {
+                    let content = unsafe { std::slice::from_raw_parts(mbox, 12) };
+                    if content == b"CONVEX_READY" {
+                        eprintln!("Init signaled READY via mailbox");
+                        print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
+                        return VmExitReason::Ready;
+                    }
+                }
                 // Unmask vtimer in case HVF masked it.
                 unsafe {
                     let _ = hvf::hv_vcpu_set_vtimer_mask(vcpu, false);
@@ -484,7 +801,7 @@ fn run_linux_vcpu_loop(
                     other, pc,
                 );
                 print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
-                return;
+                return VmExitReason::Error(format!("unexpected VM exit reason={}", other));
             }
         }
     }

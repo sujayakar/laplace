@@ -43,9 +43,10 @@ demo: guest (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     @echo "  Demo complete!"
     @echo "═══════════════════════════════════════════════════"
 
-init_bin := "init/target/aarch64-unknown-linux-musl/release/convex-init"
+init_bin := "init/target/aarch64-unknown-none/release/convex-init"
 initramfs := "/tmp/hvf-initramfs.cpio"
 linux_kernel := "kernel/Image-arm64"
+linux_template := "/tmp/hvf-linux-template"
 
 # Boot a Linux kernel in the VM (kernel only, no initramfs)
 boot-linux kernel *args: (_build-and-sign "convex-hypervisor" "convex-hypervisor")
@@ -53,15 +54,23 @@ boot-linux kernel *args: (_build-and-sign "convex-hypervisor" "convex-hypervisor
 
 # Build the init binary (PID 1 for the Linux VM)
 init:
-    cd init && cargo build --release
+    cd init && cargo build --release --target aarch64-unknown-none
 
 # Build initramfs from the init binary
 initramfs: init
     ./scripts/mkinitramfs.sh {{init_bin}} {{initramfs}}
 
-# Boot Linux with initramfs — the full M9c demo
+# Boot Linux with initramfs (no snapshot)
 boot: initramfs (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     {{host_bin}} boot-linux {{linux_kernel}} --initrd {{initramfs}}
+
+# Snapshot: boot Linux to HC_READY, save template
+snapshot-linux: initramfs (_build-and-sign "convex-hypervisor" "convex-hypervisor")
+    {{host_bin}} snapshot-linux {{linux_kernel}} --initrd {{initramfs}} {{linux_template}}
+
+# Fork: resume from snapshot with a message
+fork-linux *args: (_build-and-sign "convex-hypervisor" "convex-hypervisor")
+    {{host_bin}} fork-linux {{args}} {{linux_template}}
 
 # Build the guest (no_std aarch64 binary)
 guest:

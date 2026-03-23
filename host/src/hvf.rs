@@ -84,6 +84,27 @@ pub const HV_SYS_REG_MPIDR_EL1: u16 = 0xc005;
 // Interrupt types
 pub const HV_INTERRUPT_TYPE_IRQ: u32 = 0;
 
+// PAC key registers
+pub const HV_SYS_REG_APIAKEYLO_EL1: u16 = 0xc108;
+pub const HV_SYS_REG_APIAKEYHI_EL1: u16 = 0xc109;
+pub const HV_SYS_REG_APIBKEYLO_EL1: u16 = 0xc10a;
+pub const HV_SYS_REG_APIBKEYHI_EL1: u16 = 0xc10b;
+pub const HV_SYS_REG_APDAKEYLO_EL1: u16 = 0xc110;
+pub const HV_SYS_REG_APDAKEYHI_EL1: u16 = 0xc111;
+pub const HV_SYS_REG_APDBKEYLO_EL1: u16 = 0xc112;
+pub const HV_SYS_REG_APDBKEYHI_EL1: u16 = 0xc113;
+pub const HV_SYS_REG_APGAKEYLO_EL1: u16 = 0xc118;
+pub const HV_SYS_REG_APGAKEYHI_EL1: u16 = 0xc119;
+
+// Additional system registers for snapshot
+pub const HV_SYS_REG_AFSR0_EL1: u16 = 0xc288;
+pub const HV_SYS_REG_AFSR1_EL1: u16 = 0xc289;
+pub const HV_SYS_REG_PAR_EL1: u16 = 0xc3a0;
+pub const HV_SYS_REG_AMAIR_EL1: u16 = 0xc518;
+pub const HV_SYS_REG_CONTEXTIDR_EL1: u16 = 0xc681;
+pub const HV_SYS_REG_CSSELR_EL1: u16 = 0xd000;
+pub const HV_SYS_REG_MDSCR_EL1: u16 = 0x8012;
+
 /// System registers we snapshot/restore for a vCPU.
 pub const SNAPSHOT_SYS_REGS: &[u16] = &[
     HV_SYS_REG_SCTLR_EL1,
@@ -94,14 +115,35 @@ pub const SNAPSHOT_SYS_REGS: &[u16] = &[
     HV_SYS_REG_SPSR_EL1,
     HV_SYS_REG_ELR_EL1,
     HV_SYS_REG_SP_EL0,
+    HV_SYS_REG_ESR_EL1,
     HV_SYS_REG_FAR_EL1,
+    HV_SYS_REG_PAR_EL1,
     HV_SYS_REG_MAIR_EL1,
+    HV_SYS_REG_AMAIR_EL1,
     HV_SYS_REG_VBAR_EL1,
+    HV_SYS_REG_CONTEXTIDR_EL1,
     HV_SYS_REG_TPIDR_EL1,
     HV_SYS_REG_CNTKCTL_EL1,
     HV_SYS_REG_TPIDR_EL0,
     HV_SYS_REG_TPIDRRO_EL0,
+    HV_SYS_REG_CNTV_CTL_EL0,
+    HV_SYS_REG_CNTV_CVAL_EL0,
     HV_SYS_REG_SP_EL1,
+    HV_SYS_REG_AFSR0_EL1,
+    HV_SYS_REG_AFSR1_EL1,
+    HV_SYS_REG_CSSELR_EL1,
+    HV_SYS_REG_MDSCR_EL1,
+    // PAC keys — essential for pointer authentication
+    HV_SYS_REG_APIAKEYLO_EL1,
+    HV_SYS_REG_APIAKEYHI_EL1,
+    HV_SYS_REG_APIBKEYLO_EL1,
+    HV_SYS_REG_APIBKEYHI_EL1,
+    HV_SYS_REG_APDAKEYLO_EL1,
+    HV_SYS_REG_APDAKEYHI_EL1,
+    HV_SYS_REG_APDBKEYLO_EL1,
+    HV_SYS_REG_APDBKEYHI_EL1,
+    HV_SYS_REG_APGAKEYLO_EL1,
+    HV_SYS_REG_APGAKEYHI_EL1,
 ];
 
 #[repr(C)]
@@ -192,6 +234,33 @@ extern "C" {
 
     // Force vCPU exit
     pub fn hv_vcpus_exit(vcpus: *const HvVcpu, vcpu_count: u32) -> HvReturn;
+
+    // GIC state save/restore
+    pub fn hv_gic_state_create() -> *mut std::ffi::c_void; // returns hv_gic_state_t
+    pub fn hv_gic_state_get_size(
+        state: *const std::ffi::c_void,
+        gic_state_size: *mut usize,
+    ) -> HvReturn;
+    pub fn hv_gic_state_get_data(
+        state: *const std::ffi::c_void,
+        gic_state_data: *mut u8,
+    ) -> HvReturn;
+    pub fn hv_gic_set_state(
+        gic_state_data: *const u8,
+        gic_state_size: usize,
+    ) -> HvReturn;
+
+    // GIC ICC (CPU interface) registers for save/restore
+    pub fn hv_gic_get_icc_reg(
+        vcpu: HvVcpu,
+        reg: u16,
+        value: *mut u64,
+    ) -> HvReturn;
+    pub fn hv_gic_set_icc_reg(
+        vcpu: HvVcpu,
+        reg: u16,
+        value: u64,
+    ) -> HvReturn;
 }
 
 pub fn check_hv(ret: HvReturn, context: &str) {

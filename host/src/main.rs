@@ -542,6 +542,8 @@ fn main() {
         eprintln!("  convex-hypervisor fork [--seed N] [--js 'code'] <template-dir>");
         eprintln!("  convex-hypervisor bench [--iterations N] [--js 'code'] <template-dir>");
         eprintln!("  convex-hypervisor boot-linux <kernel-image> [--initrd <initrd>]");
+        eprintln!("  convex-hypervisor snapshot-linux <kernel-image> --initrd <initrd> <template-dir>");
+        eprintln!("  convex-hypervisor fork-linux [--msg 'text'] <template-dir>");
         std::process::exit(1);
     }
 
@@ -552,6 +554,18 @@ fn main() {
                 Path::new(&kernel_path),
                 initrd_path.as_deref().map(Path::new),
             );
+        }
+        "snapshot-linux" => {
+            let (kernel_path, initrd_path, template_dir) = parse_snapshot_linux_args(&args[2..]);
+            linux_boot::cmd_snapshot_linux(
+                Path::new(&kernel_path),
+                initrd_path.as_deref().map(Path::new),
+                Path::new(&template_dir),
+            );
+        }
+        "fork-linux" => {
+            let (msg, template_dir) = parse_fork_linux_args(&args[2..]);
+            linux_boot::cmd_fork_linux(Path::new(&template_dir), msg.as_bytes());
         }
         "run" => {
             let (seed, guest_path) = parse_run_args(&args[2..]);
@@ -673,6 +687,57 @@ fn parse_boot_linux_args(args: &[String]) -> (String, Option<String>) {
         std::process::exit(1);
     }
     (kernel_path, initrd_path)
+}
+
+fn parse_snapshot_linux_args(args: &[String]) -> (String, Option<String>, String) {
+    let mut kernel_path = String::new();
+    let mut initrd_path: Option<String> = None;
+    let mut template_dir = String::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--initrd" => {
+                initrd_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            other => {
+                if kernel_path.is_empty() {
+                    kernel_path = other.to_string();
+                } else {
+                    template_dir = other.to_string();
+                }
+                i += 1;
+            }
+        }
+    }
+    if kernel_path.is_empty() || template_dir.is_empty() {
+        eprintln!("snapshot-linux requires: <kernel-image> --initrd <initrd> <template-dir>");
+        std::process::exit(1);
+    }
+    (kernel_path, initrd_path, template_dir)
+}
+
+fn parse_fork_linux_args(args: &[String]) -> (String, String) {
+    let mut msg = String::new();
+    let mut template_dir = String::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--msg" => {
+                msg = args.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
+            other => {
+                template_dir = other.to_string();
+                i += 1;
+            }
+        }
+    }
+    if template_dir.is_empty() {
+        eprintln!("fork-linux requires: [--msg 'text'] <template-dir>");
+        std::process::exit(1);
+    }
+    (msg, template_dir)
 }
 
 #[cfg(test)]
