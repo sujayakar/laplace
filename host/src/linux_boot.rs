@@ -198,8 +198,9 @@ fn handle_patched_timer_hvc(
         }
         0x280 => {
             // CNTV_TVAL read
-            let val = vtimer.read_cval().wrapping_sub(vtimer.counter) as i32;
-            unsafe { check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, val as u64), "tval read"); }
+            // TVAL = CVAL - counter, sign-extended to 64 bits per ARM spec
+            let val = vtimer.read_cval().wrapping_sub(vtimer.counter) as i32 as i64 as u64;
+            unsafe { check_hv(hvf::hv_vcpu_set_reg(vcpu, rt, val), "tval read"); }
         }
         0x2C0 => {
             // CNTV_TVAL write
@@ -832,7 +833,7 @@ fn run_linux_vcpu_loop(
     let mut hvc_count: u64 = 0;
     let mut timer_count: u64 = 0;
     let mut wfi_count: u64 = 0;
-    let mut sysreg_count: u64 = 0;
+    let mut _sysreg_count: u64 = 0;
     let mut canceled_count: u64 = 0;
     let start_time = std::time::Instant::now();
     let mut last_log = start_time;
@@ -845,14 +846,13 @@ fn run_linux_vcpu_loop(
         if should_log {
             let pc = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_PC) };
             let cpsr = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_CPSR) };
-            let lr = unsafe { hvf::vcpu_get_reg(vcpu, 30) }; // x30 = LR
-            let el = (cpsr >> 2) & 3; // exception level from CPSR.M[3:2]
+            let el = (cpsr >> 2) & 3;
             let sp = unsafe { hvf::vcpu_get_sys_reg(vcpu, hvf::HV_SYS_REG_SP_EL1) };
             let elapsed = now.duration_since(start_time);
             eprintln!(
-                "[{:.1}s, {} exits] EL{} PC=0x{:x} SP=0x{:x} mmio={} hvc={} timer={} vtimer={} canceled={}",
+                "[{:.1}s, {} exits] EL{} PC=0x{:x} SP=0x{:x} mmio={} hvc={} timer={} canceled={}",
                 elapsed.as_secs_f64(), exit_count, el, pc, sp,
-                mmio_count, hvc_count, timer_count, timer_count, canceled_count,
+                mmio_count, hvc_count, timer_count, canceled_count,
             );
             last_log = now;
         }
@@ -1011,7 +1011,7 @@ fn run_linux_vcpu_loop(
 
                     // MSR/MRS trap (system register access)
                     0x18 => {
-                        sysreg_count += 1;
+                        _sysreg_count += 1;
                         handle_sys_reg_trap(vcpu, syndrome);
                     }
 

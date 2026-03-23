@@ -55,7 +55,7 @@ fn main() {
 
     if js_code.is_empty() {
         eprintln!("[runner-v8] no JS received on stdin");
-        power_off();
+        std::process::exit(1);
     }
 
     eprintln!("[runner-v8] eval: {}", js_code.trim());

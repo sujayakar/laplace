@@ -221,7 +221,7 @@ pub extern "C" fn _start() -> ! {
         // Wait for runner child to exit
         let mut status: i32 = 0;
         unsafe {
-            syscall4(__NR_WAIT4, u64::MAX, // -1 = any child
+            syscall4(__NR_WAIT4, (-1i64) as u64, // -1 = any child
                 &mut status as *mut i32 as u64, 0, 0);
         }
     } else {
