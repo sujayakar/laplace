@@ -1,24 +1,27 @@
 //! V8 JS runner for the Linux VM.
 //!
-//! Can run as PID 1 (init) or be exec'd by the no_std init.
-//! If /dev/kmsg doesn't exist, mounts devtmpfs first.
-//! Reads JS from the mailbox, or from /proc/cmdline (convex.js=...),
-//! or uses a default test expression.
+//! Lifecycle:
+//! 1. Mount devtmpfs/proc, redirect output to /dev/kmsg
+//! 2. Initialize V8 (platform, isolate, context, console.log)
+//! 3. Write READY to mailbox → host snapshots
+//! 4. Spin until mailbox changes (fork-resume writes JS code)
+//! 5. Evaluate JS, print result, power off
+//!
+//! V8 initialization (step 2) happens BEFORE the snapshot, so it's
+//! amortized across all forks. Forks skip directly to step 4.
 
 use std::ffi::CString;
 use std::io::Write;
 use std::os::unix::io::AsRawFd;
 
-// Must match LINUX_MAILBOX_GPA/SIZE in host/src/linux_boot.rs
 const MAILBOX_GPA: u64 = 0x3FFF_0000;
 const MAILBOX_SIZE: usize = 64 * 1024;
+const READY_MAGIC: &[u8] = b"CONVEX_READY";
 
 fn main() {
-    // Mount essential filesystems if not already mounted
     mount_if_needed("devtmpfs", "/dev", "devtmpfs");
     mount_if_needed("proc", "/proc", "proc");
 
-    // Redirect stdout/stderr to /dev/kmsg
     if let Ok(kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
         unsafe {
             libc::dup2(kmsg.as_raw_fd(), 1);
@@ -28,27 +31,21 @@ fn main() {
 
     eprintln!("[runner-v8] V8 runner starting");
 
-    // Get JS code: try mailbox first, then cmdline, then default
-    eprintln!("[runner-v8] getting JS code...");
-    let js_code = get_js_code();
-    eprintln!("[runner-v8] eval: {}", js_code);
+    // Check if JS was passed via argv (fork path — init already read mailbox)
+    let args: Vec<String> = std::env::args().collect();
+    let js_from_argv = if args.len() > 1 { Some(args[1..].join(" ")) } else { None };
 
-    // Initialize V8 in single-threaded mode to avoid scheduler dependency
-    eprintln!("[runner-v8] initializing V8 platform (single-threaded)...");
-    // Platform with 0 worker threads = main thread only
+    // Initialize V8
+    eprintln!("[runner-v8] initializing V8...");
     let platform = v8::new_single_threaded_default_platform(false).make_shared();
     v8::V8::initialize_platform(platform);
     v8::V8::set_flags_from_string("--single-threaded");
     v8::V8::initialize();
-    eprintln!("[runner-v8] V8 initialized, creating isolate...");
 
     let isolate = &mut v8::Isolate::new(Default::default());
-    eprintln!("[runner-v8] isolate created, creating context...");
-
     v8::scope!(let scope, isolate);
     let context = v8::Context::new(scope, Default::default());
     let scope = &mut v8::ContextScope::new(scope, context);
-    eprintln!("[runner-v8] context created, installing console.log...");
 
     // Install console.log
     let global = context.global(scope);
@@ -59,9 +56,41 @@ fn main() {
     console_obj.set(scope, log_key.into(), log_fn.into());
     global.set(scope, console_key.into(), console_obj.into());
 
-    eprintln!("[runner-v8] evaluating JS...");
+    eprintln!("[runner-v8] V8 ready");
 
-    // Evaluate
+    // Get JS code
+    let js_code = if let Some(code) = js_from_argv {
+        // Fork path: JS was passed as argv[1] by init
+        code
+    } else {
+        // Snapshot path: write READY, spin until host writes JS code
+        // Map mailbox and write READY
+        if let Some(mailbox) = map_mailbox_rw() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    READY_MAGIC.as_ptr(), mailbox, READY_MAGIC.len(),
+                );
+                *mailbox.add(READY_MAGIC.len()) = 0;
+            }
+            eprintln!("[runner-v8] READY (waiting for JS in mailbox)");
+
+            // Spin until mailbox content changes
+            loop {
+                let first = unsafe { std::ptr::read_volatile(mailbox) };
+                if first != READY_MAGIC[0] { break; }
+                std::hint::spin_loop();
+            }
+
+            // Read JS from mailbox
+            read_mailbox_str(mailbox as *const u8).to_string()
+        } else {
+            // Can't access mailbox — use default
+            "console.log('Hello from V8!', 1+2)".to_string()
+        }
+    };
+
+    eprintln!("[runner-v8] eval: {}", js_code);
+
     let code = v8::String::new(scope, &js_code).unwrap();
     match v8::Script::compile(scope, code, None) {
         Some(script) => match script.run(scope) {
@@ -70,7 +99,6 @@ fn main() {
                 if s != "undefined" {
                     let _ = writeln!(std::io::stdout(), "{}", s);
                 }
-                eprintln!("[runner-v8] eval complete");
             }
             None => eprintln!("[runner-v8] eval returned None"),
         },
@@ -80,59 +108,6 @@ fn main() {
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
     power_off();
-}
-
-fn get_js_code() -> String {
-    // Check argv first (init passes JS code as argv[1] if available)
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 {
-        return args[1..].join(" ");
-    }
-
-    // Try kernel command line: look for convex.js=...
-    eprintln!("[runner-v8] trying cmdline...");
-    if let Ok(cmdline) = std::fs::read_to_string("/proc/cmdline") {
-        for param in cmdline.split_whitespace() {
-            if let Some(js) = param.strip_prefix("convex.js=") {
-                return js.to_string();
-            }
-        }
-    }
-
-    // Default test expression
-    eprintln!("[runner-v8] using default JS");
-    "console.log('Hello from V8 in a deterministic VM!', 1+2)".to_string()
-}
-
-fn try_read_mailbox() -> Option<String> {
-    let path = CString::new("/dev/mem").ok()?;
-    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
-    if fd < 0 {
-        return None;
-    }
-    let ptr = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            MAILBOX_SIZE,
-            libc::PROT_READ,
-            libc::MAP_SHARED,
-            fd,
-            MAILBOX_GPA as libc::off_t,
-        )
-    };
-    unsafe { libc::close(fd); }
-    if ptr == libc::MAP_FAILED {
-        return None;
-    }
-    let mailbox = ptr as *const u8;
-    let mut len = 0;
-    unsafe {
-        while len < MAILBOX_SIZE && *mailbox.add(len) != 0 {
-            len += 1;
-        }
-    }
-    let s = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(mailbox, len)) };
-    Some(s.to_string())
 }
 
 fn console_log_callback(
@@ -150,38 +125,49 @@ fn console_log_callback(
     let _ = std::io::stdout().flush();
 }
 
+fn map_mailbox_rw() -> Option<*mut u8> {
+    let path = CString::new("/dev/mem").ok()?;
+    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR) };
+    if fd < 0 { return None; }
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(), MAILBOX_SIZE,
+            libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED,
+            fd, MAILBOX_GPA as libc::off_t,
+        )
+    };
+    unsafe { libc::close(fd); }
+    if ptr == libc::MAP_FAILED { return None; }
+    Some(ptr as *mut u8)
+}
+
+fn read_mailbox_str(mailbox: *const u8) -> &'static str {
+    let mut len = 0;
+    unsafe {
+        while len < MAILBOX_SIZE && *mailbox.add(len) != 0 { len += 1; }
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(mailbox, len))
+    }
+}
+
 fn mount_if_needed(source: &str, target: &str, fstype: &str) {
-    // Check if already mounted by trying to stat a known file
-    if target == "/dev" && std::path::Path::new("/dev/null").exists() {
-        return;
-    }
-    if target == "/proc" && std::path::Path::new("/proc/self").exists() {
-        return;
-    }
+    if target == "/dev" && std::path::Path::new("/dev/null").exists() { return; }
+    if target == "/proc" && std::path::Path::new("/proc/self").exists() { return; }
     let _ = std::fs::create_dir_all(target);
     let src = CString::new(source).unwrap();
     let tgt = CString::new(target).unwrap();
     let fst = CString::new(fstype).unwrap();
     unsafe {
-        libc::mount(
-            src.as_ptr(),
-            tgt.as_ptr(),
-            fst.as_ptr(),
-            0,
-            std::ptr::null::<libc::c_void>(),
-        );
+        libc::mount(src.as_ptr(), tgt.as_ptr(), fst.as_ptr(), 0,
+            std::ptr::null::<libc::c_void>());
     }
 }
 
 fn power_off() -> ! {
     unsafe {
         std::arch::asm!(
-            "mov x8, #142",
-            "svc #0",
-            in("x0") 0xfee1deadu64,
-            in("x1") 0x28121969u64,
-            in("x2") 0x4321fedcu64,
-            in("x3") 0u64,
+            "mov x8, #142", "svc #0",
+            in("x0") 0xfee1deadu64, in("x1") 0x28121969u64,
+            in("x2") 0x4321fedcu64, in("x3") 0u64,
             options(noreturn),
         );
     }

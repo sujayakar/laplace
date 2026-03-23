@@ -158,7 +158,20 @@ pub extern "C" fn _start() -> ! {
     };
     let out_fd = if kmsg_fd >= 0 { kmsg_fd as i32 } else { 1 };
 
-    // Map the mailbox page (read-write so we can write the READY marker)
+    // Try to exec /runner immediately. If it exists, it handles its own
+    // READY/spin logic (e.g., V8 initializes before signaling READY).
+    // If /runner doesn't exist, execve fails and we fall through to the
+    // init's own READY/spin logic.
+    write_all(out_fd, b"[convex-init] trying /runner\n");
+    unsafe {
+        let path = b"/runner\0";
+        let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
+        let envp: [*const u8; 1] = [core::ptr::null()];
+        syscall3(221, path.as_ptr() as u64, argv.as_ptr() as u64, envp.as_ptr() as u64);
+        // execve failed — /runner doesn't exist, fall through
+    }
+
+    // No /runner — use init's own READY/spin logic
     let mailbox = map_mailbox(true);
     if mailbox.is_null() {
         write_all(out_fd, b"[convex-init] ERROR: failed to map mailbox via /dev/mem\n");
@@ -166,54 +179,19 @@ pub extern "C" fn _start() -> ! {
         loop {}
     }
 
-    // Write READY marker to mailbox.
-    // The host will force a VM exit, see the marker, and snapshot.
-    // After fork, the host overwrites the mailbox with per-fork data
-    // and resumes — we'll detect the change and proceed.
-    write_all(out_fd, b"[convex-init] initialized, writing READY to mailbox\n");
+    write_all(out_fd, b"[convex-init] writing READY to mailbox\n");
     unsafe {
         core::ptr::copy_nonoverlapping(READY_MAGIC.as_ptr(), mailbox, READY_MAGIC.len());
         *mailbox.add(READY_MAGIC.len()) = 0;
     }
 
-    // Spin until the mailbox content changes (host wrote per-fork data).
-    // The host's snapshot captures this spin state. On fork-resume, the
-    // mailbox has new data, so this loop exits immediately.
     loop {
         let first_byte = unsafe { core::ptr::read_volatile(mailbox) };
-        // READY_MAGIC starts with 'C' (0x43). When the host writes new data
-        // (or clears it), the first byte changes.
-        if first_byte != READY_MAGIC[0] {
-            break;
-        }
-        // Brief yield — ISB to prevent tight spin from being optimized away
+        if first_byte != READY_MAGIC[0] { break; }
         unsafe { core::arch::asm!("isb"); }
     }
 
-    // --- We are now running in a forked VM ---
-
-    // Try to exec /runner with mailbox content as argv[1].
-    // The mailbox data is null-terminated (host ensures this), so we can
-    // pass the raw pointer directly as a C string for execve.
-    {
-        let path = b"/runner\0";
-        // mailbox points to the raw data which is null-terminated
-        let first_byte = unsafe { *mailbox };
-        if first_byte != 0 {
-            // Pass mailbox content as argv[1]
-            unsafe {
-                let argv: [*const u8; 3] = [path.as_ptr(), mailbox, core::ptr::null()];
-                let envp: [*const u8; 1] = [core::ptr::null()];
-                syscall3(221, path.as_ptr() as u64, argv.as_ptr() as u64, envp.as_ptr() as u64);
-            }
-        } else {
-            unsafe {
-                let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
-                let envp: [*const u8; 1] = [core::ptr::null()];
-                syscall3(221, path.as_ptr() as u64, argv.as_ptr() as u64, envp.as_ptr() as u64);
-            }
-        }
-    }
+    // --- Forked VM (no runner) — print mailbox content ---
 
     let msg = read_mailbox_str(mailbox);
     if msg.is_empty() || msg == READY_MAGIC {
