@@ -594,15 +594,11 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
             hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE), "hv_vm_map mailbox fork");
     }
 
-    // Set up GIC and restore its state
+    // Set up fresh GIC without restoring state.
+    // TODO: investigate if GIC state restore breaks timer PPI routing.
     setup_gic();
-    let gic_state = std::fs::read(template_dir.join("gic.state")).expect("read gic.state");
-    unsafe {
-        check_hv(
-            hvf::hv_gic_set_state(gic_state.as_ptr(), gic_state.len()),
-            "hv_gic_set_state",
-        );
-    }
+    // Skip hv_gic_set_state for now — fresh GIC lets the kernel
+    // reinitialize interrupt routing on the first timer tick.
 
     // Create vCPU and restore CPU state
     let mut vcpu: u64 = 0;

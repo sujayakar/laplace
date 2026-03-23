@@ -33,10 +33,12 @@ fn main() {
     let js_code = get_js_code();
     eprintln!("[runner-v8] eval: {}", js_code);
 
-    // Initialize V8
-    eprintln!("[runner-v8] initializing V8 platform...");
-    let platform = v8::new_default_platform(0, false).make_shared();
+    // Initialize V8 in single-threaded mode to avoid scheduler dependency
+    eprintln!("[runner-v8] initializing V8 platform (single-threaded)...");
+    // Platform with 0 worker threads = main thread only
+    let platform = v8::new_single_threaded_default_platform(false).make_shared();
     v8::V8::initialize_platform(platform);
+    v8::V8::set_flags_from_string("--single-threaded");
     v8::V8::initialize();
     eprintln!("[runner-v8] V8 initialized, creating isolate...");
 
