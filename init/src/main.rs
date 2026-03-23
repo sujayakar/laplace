@@ -166,6 +166,22 @@ pub extern "C" fn _start() -> ! {
         loop {}
     }
 
+    // If /runner exists and mailbox is empty (direct boot, not fork),
+    // exec the runner immediately without going through snapshot flow.
+    let first_byte = unsafe { core::ptr::read_volatile(mailbox) };
+    if first_byte == 0 {
+        // Mailbox is empty — this is a direct boot, not a fork resume.
+        // Try to exec /runner directly for testing.
+        write_all(out_fd, b"[convex-init] direct boot, trying /runner\n");
+        unsafe {
+            let path = b"/runner\0";
+            let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
+            let envp: [*const u8; 1] = [core::ptr::null()];
+            syscall3(221, path.as_ptr() as u64, argv.as_ptr() as u64, envp.as_ptr() as u64);
+            // execve failed — /runner doesn't exist, continue to snapshot flow
+        }
+    }
+
     // Write READY marker to mailbox.
     // The host will force a VM exit, see the marker, and snapshot.
     // After fork, the host overwrites the mailbox with per-fork data

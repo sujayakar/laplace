@@ -170,7 +170,8 @@ pub fn build_dtb(
              nohz=off \
              console=ttyAMA0 \
              lpj=50000 \
-             rdinit=/init",
+             rdinit=/init \
+",
         )
         .expect("bootargs");
         fdt.property_string("stdout-path", &format!("/pl011@{:x}", UART_BASE))
