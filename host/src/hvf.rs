@@ -96,6 +96,8 @@ pub const HV_SYS_REG_TPIDR_EL0: u16 = 0xde82;
 pub const HV_SYS_REG_TPIDRRO_EL0: u16 = 0xde83;
 pub const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
 pub const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
+// EL2 timer control — only available with GIC (macOS 15.0+)
+pub const HV_SYS_REG_CNTHCTL_EL2: u16 = 0xe708;
 pub const HV_SYS_REG_SP_EL1: u16 = 0xe208;
 
 // Interrupt types

@@ -523,9 +523,29 @@ fn setup_cpu_for_linux(vcpu: u64, kernel_entry: u64, dtb_addr: u64) {
             "set MPIDR_EL1",
         );
 
-        // Don't mask the vtimer — let HVF handle it for now so the kernel
-        // can boot with real-time timer interrupts. We'll switch to fully
-        // virtualized timer once boot works.
+        // Try to set CNTHCTL_EL2 to trap timer register accesses for
+        // deterministic virtual time. If this fails (HVF doesn't support it
+        // without EL2 enabled), fall back to non-deterministic real-time.
+        //
+        // CNTHCTL_EL2 bits:
+        //   bit 0 (EL1PCTEN): 0 = trap physical counter reads at EL0/EL1
+        //   bit 1 (EL1PCEN): 0 = trap physical timer control at EL0/EL1
+        // Setting to 0 traps all physical timer/counter accesses.
+        let cnthctl_ret = hvf::hv_vcpu_set_sys_reg(
+            vcpu,
+            hvf::HV_SYS_REG_CNTHCTL_EL2,
+            0, // trap everything
+        );
+        if cnthctl_ret == hvf::HV_SUCCESS {
+            eprintln!("Timer trapping enabled via CNTHCTL_EL2");
+        } else {
+            eprintln!(
+                "CNTHCTL_EL2 not available (ret=0x{:x}), using real-time timer",
+                cnthctl_ret as u32
+            );
+        }
+
+        // Don't mask the vtimer — let HVF deliver vtimer interrupts
         check_hv(hvf::hv_vcpu_set_vtimer_mask(vcpu, false), "unmask vtimer");
     }
 }
