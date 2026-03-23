@@ -233,6 +233,14 @@ extern "C" {
     // Force vCPU exit
     pub fn hv_vcpus_exit(vcpus: *const HvVcpu, vcpu_count: u32) -> HvReturn;
 
+    // VM configuration
+    pub fn hv_vm_config_create() -> *mut std::ffi::c_void; // returns hv_vm_config_t
+    pub fn hv_vm_config_get_el2_supported(el2_supported: *mut bool) -> HvReturn;
+    pub fn hv_vm_config_set_el2_enabled(
+        config: *mut std::ffi::c_void,
+        el2_enabled: bool,
+    ) -> HvReturn;
+
     // GIC state save/restore
     pub fn hv_gic_state_create() -> *mut std::ffi::c_void; // returns hv_gic_state_t
     pub fn hv_gic_state_get_size(

@@ -34,6 +34,31 @@ struct LoadedKernel {
     dtb_addr: u64,
 }
 
+/// Create a VM with EL2 enabled (for timer trapping) if the platform supports it.
+fn create_vm_with_el2() {
+    unsafe {
+        let mut el2_supported = false;
+        check_hv(
+            hvf::hv_vm_config_get_el2_supported(&mut el2_supported),
+            "hv_vm_config_get_el2_supported",
+        );
+
+        if el2_supported {
+            let config = hvf::hv_vm_config_create();
+            assert!(!config.is_null(), "hv_vm_config_create returned null");
+            check_hv(
+                hvf::hv_vm_config_set_el2_enabled(config, true),
+                "hv_vm_config_set_el2_enabled",
+            );
+            check_hv(hvf::hv_vm_create(config as *const _), "hv_vm_create (EL2)");
+            eprintln!("VM created with EL2 enabled (timer trapping available)");
+        } else {
+            check_hv(hvf::hv_vm_create(ptr::null()), "hv_vm_create");
+            eprintln!("VM created without EL2 (timer trapping not available)");
+        }
+    }
+}
+
 /// Load kernel image, optional initrd, and generated DTB into a freshly
 /// allocated guest memory region.
 fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>) -> LoadedKernel {
@@ -208,9 +233,7 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
     let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr } = loaded;
 
     // Create VM
-    unsafe {
-        check_hv(hvf::hv_vm_create(ptr::null()), "hv_vm_create");
-    }
+    create_vm_with_el2();
 
     // Map guest RAM
     unsafe {
@@ -306,7 +329,7 @@ pub fn cmd_snapshot_linux(
     let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr } = loaded;
 
     // Create VM, GIC, vCPU
-    unsafe { check_hv(hvf::hv_vm_create(ptr::null()), "hv_vm_create"); }
+    create_vm_with_el2();
     unsafe {
         check_hv(hvf::hv_vm_map(mem, GUEST_RAM_BASE, ram_size,
             hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE | hvf::HV_MEMORY_EXEC), "hv_vm_map");
@@ -401,7 +424,7 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
     }
 
     // Create VM
-    unsafe { check_hv(hvf::hv_vm_create(ptr::null()), "hv_vm_create fork"); }
+    create_vm_with_el2();
     unsafe {
         check_hv(hvf::hv_vm_map(mem, GUEST_RAM_BASE, ram_size,
             hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE | hvf::HV_MEMORY_EXEC), "hv_vm_map fork");
