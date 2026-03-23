@@ -158,20 +158,8 @@ pub extern "C" fn _start() -> ! {
     };
     let out_fd = if kmsg_fd >= 0 { kmsg_fd as i32 } else { 1 };
 
-    // Try to exec /runner immediately. If it exists, it handles its own
-    // READY/spin logic (e.g., V8 initializes before signaling READY).
-    // If /runner doesn't exist, execve fails and we fall through to the
-    // init's own READY/spin logic.
-    write_all(out_fd, b"[convex-init] trying /runner\n");
-    unsafe {
-        let path = b"/runner\0";
-        let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
-        let envp: [*const u8; 1] = [core::ptr::null()];
-        syscall3(221, path.as_ptr() as u64, argv.as_ptr() as u64, envp.as_ptr() as u64);
-        // execve failed — /runner doesn't exist, fall through
-    }
-
-    // No /runner — use init's own READY/spin logic
+    // Map mailbox and do READY/spin — this is the snapshot point.
+    // After fork, the host writes JS to the mailbox, and we exec /runner.
     let mailbox = map_mailbox(true);
     if mailbox.is_null() {
         write_all(out_fd, b"[convex-init] ERROR: failed to map mailbox via /dev/mem\n");
@@ -191,8 +179,19 @@ pub extern "C" fn _start() -> ! {
         unsafe { core::arch::asm!("isb"); }
     }
 
-    // --- Forked VM (no runner) — print mailbox content ---
+    // --- We are now in a forked VM ---
+    // Try to exec /runner with mailbox content as argv[1]
+    let first_byte = unsafe { *mailbox };
+    if first_byte != 0 {
+        let path = b"/runner\0";
+        unsafe {
+            let argv: [*const u8; 3] = [path.as_ptr(), mailbox, core::ptr::null()];
+            let envp: [*const u8; 1] = [core::ptr::null()];
+            syscall3(221, path.as_ptr() as u64, argv.as_ptr() as u64, envp.as_ptr() as u64);
+        }
+    }
 
+    // /runner doesn't exist or exec failed — print mailbox as text
     let msg = read_mailbox_str(mailbox);
     if msg.is_empty() || msg == READY_MAGIC {
         write_all(out_fd, b"[convex-init] no message in mailbox\n");
