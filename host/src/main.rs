@@ -24,7 +24,7 @@ use rand::RngCore;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
-const PAGE_SIZE: usize = 16384;
+pub(crate) const PAGE_SIZE: usize = 16384;
 
 /// Per-VM deterministic state.
 struct VmState {
@@ -43,11 +43,11 @@ impl VmState {
     }
 }
 
-fn page_align(size: usize) -> usize {
+pub(crate) fn page_align(size: usize) -> usize {
     (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
 }
 
-fn alloc_pages(size: usize) -> *mut u8 {
+pub(crate) fn alloc_pages(size: usize) -> *mut u8 {
     unsafe {
         let ptr = libc::mmap(
             ptr::null_mut(),

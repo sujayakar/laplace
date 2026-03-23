@@ -67,9 +67,10 @@ pub enum PsciResult {
     SystemReset,
 }
 
-/// Try to handle an HVC as a PSCI call. Returns None if the function ID
-/// is not a PSCI function (i.e., it's a regular hypercall).
-pub fn handle_psci(func_id: u32) -> Option<PsciResult> {
+/// Try to handle an HVC as a PSCI/SMCCC call.
+/// `func_id` is x0, `arg1` is x1 (used by PSCI_FEATURES to identify the queried function).
+/// Returns None if the function ID is not a PSCI/SMCCC function.
+pub fn handle_psci(func_id: u32, arg1: u64) -> Option<PsciResult> {
     match func_id {
         // SMCCC calls
         SMCCC_VERSION => {
@@ -118,8 +119,20 @@ pub fn handle_psci(func_id: u32) -> Option<PsciResult> {
         }
 
         PSCI_FEATURES => {
-            // Report which functions we support
-            Some(PsciResult::Return(PSCI_SUCCESS as u64))
+            // Check if the queried function (in arg1/x1) is one we support
+            let queried = arg1 as u32;
+            let supported = matches!(
+                queried,
+                PSCI_VERSION | PSCI_CPU_ON_32 | PSCI_CPU_ON_64 | PSCI_CPU_OFF
+                    | PSCI_CPU_SUSPEND_32 | PSCI_AFFINITY_INFO_64
+                    | PSCI_MIGRATE_INFO_TYPE | PSCI_SYSTEM_OFF | PSCI_SYSTEM_RESET
+                    | PSCI_FEATURES | SMCCC_VERSION
+            );
+            if supported {
+                Some(PsciResult::Return(PSCI_SUCCESS as u64))
+            } else {
+                Some(PsciResult::Return(PSCI_NOT_SUPPORTED as u64))
+            }
         }
 
         PSCI_SYSTEM_OFF => Some(PsciResult::SystemOff),
@@ -146,5 +159,70 @@ pub fn handle_psci(func_id: u32) -> Option<PsciResult> {
 
         // Not a PSCI/SMCCC function ID
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn returns(func_id: u32) -> Option<u64> {
+        match handle_psci(func_id, 0) {
+            Some(PsciResult::Return(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn psci_version() {
+        assert_eq!(returns(PSCI_VERSION), Some(PSCI_VERSION_1_1));
+    }
+
+    #[test]
+    fn smccc_version() {
+        assert_eq!(returns(SMCCC_VERSION), Some((1 << 16) | 2));
+    }
+
+    #[test]
+    fn system_off() {
+        assert!(matches!(handle_psci(PSCI_SYSTEM_OFF, 0), Some(PsciResult::SystemOff)));
+    }
+
+    #[test]
+    fn system_reset() {
+        assert!(matches!(handle_psci(PSCI_SYSTEM_RESET, 0), Some(PsciResult::SystemReset)));
+    }
+
+    #[test]
+    fn cpu_on_returns_already_on() {
+        assert_eq!(returns(PSCI_CPU_ON_64), Some(PSCI_ALREADY_ON as u64));
+    }
+
+    #[test]
+    fn features_returns_supported_for_known_functions() {
+        // PSCI_VERSION is supported
+        match handle_psci(PSCI_FEATURES, PSCI_VERSION as u64) {
+            Some(PsciResult::Return(v)) => assert_eq!(v, PSCI_SUCCESS as u64),
+            other => panic!("Expected Return(SUCCESS), got {:?}", other.is_some()),
+        }
+    }
+
+    #[test]
+    fn features_returns_not_supported_for_unknown_functions() {
+        // Some random function ID
+        match handle_psci(PSCI_FEATURES, 0x12345678) {
+            Some(PsciResult::Return(v)) => assert_eq!(v, PSCI_NOT_SUPPORTED as u64),
+            other => panic!("Expected Return(NOT_SUPPORTED), got {:?}", other.is_some()),
+        }
+    }
+
+    #[test]
+    fn unknown_function_returns_none() {
+        assert!(handle_psci(0x12345678, 0).is_none());
+    }
+
+    #[test]
+    fn ffa_version_not_supported() {
+        assert_eq!(returns(FFA_VERSION), Some(PSCI_NOT_SUPPORTED as u64));
     }
 }

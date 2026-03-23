@@ -13,7 +13,7 @@ use crate::pl011::Pl011;
 use crate::psci;
 use crate::vtimer::VirtualTimer;
 
-const PAGE_SIZE: usize = 16384;
+use crate::{alloc_pages, page_align};
 
 /// Guest memory layout for Linux boot.
 /// We place RAM at a standard base address and use the top of RAM for DTB.
@@ -25,28 +25,6 @@ const KERNEL_OFFSET: u64 = 0x8_0000;
 
 /// DTB is placed near the top of RAM (last 2 MiB)
 const DTB_MAX_SIZE: usize = 2 * 1024 * 1024;
-
-fn page_align(size: usize) -> usize {
-    (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
-}
-
-/// Allocate page-aligned anonymous memory.
-fn alloc_pages(size: usize) -> *mut u8 {
-    unsafe {
-        let ptr = libc::mmap(
-            ptr::null_mut(),
-            size,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_ANON | libc::MAP_PRIVATE,
-            -1,
-            0,
-        );
-        if ptr == libc::MAP_FAILED {
-            panic!("mmap failed: {}", std::io::Error::last_os_error());
-        }
-        ptr as *mut u8
-    }
-}
 
 /// Parse the MMIO access details from a data abort syndrome (ESR_EL2).
 /// EC=0x24 (data abort from lower EL) is expected.
@@ -153,11 +131,6 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
         dtb_data.len()
     );
 
-    // Dump DTB for debugging
-    let dtb_path = "/tmp/hvf-linux.dtb";
-    std::fs::write(dtb_path, &dtb_data).expect("write DTB dump");
-    eprintln!("DTB dumped to {} (inspect with: dtc -I dtb -O dts {})", dtb_path, dtb_path);
-
     // Create VM
     unsafe {
         check_hv(hvf::hv_vm_create(ptr::null()), "hv_vm_create");
@@ -195,13 +168,6 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>) {
     // Create devices
     let uart = Pl011::new(dtb::UART_BASE);
     let mut vtimer = VirtualTimer::new();
-
-    // Query the redistributor base for this vCPU
-    unsafe {
-        let mut redist_base: u64 = 0;
-        let ret = hvf::hv_gic_get_redistributor_base(vcpu, &mut redist_base);
-        eprintln!("Redistributor base for vCPU: 0x{:x} (ret={})", redist_base, ret);
-    }
 
     eprintln!("Starting Linux kernel...\n");
 
@@ -354,12 +320,14 @@ fn run_linux_vcpu_loop(
                 let ipa = exit.exception.physical_address;
 
                 match ec {
-                    // HVC from AArch64
-                    0x16 => {
+                    // HVC (0x16) or SMC (0x17) from AArch64
+                    0x16 | 0x17 => {
                         hvc_count += 1;
+                        let is_smc = ec == 0x17;
                         let x0 = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_X0) };
-                        // Try PSCI first
-                        if let Some(result) = psci::handle_psci(x0 as u32) {
+                        let x1 = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_X1) };
+
+                        if let Some(result) = psci::handle_psci(x0 as u32, x1) {
                             match result {
                                 psci::PsciResult::Return(val) => unsafe {
                                     check_hv(
@@ -369,22 +337,17 @@ fn run_linux_vcpu_loop(
                                 },
                                 psci::PsciResult::SystemOff => {
                                     eprintln!("\nPSCI SYSTEM_OFF");
-                                    print_exit_stats(
-                                        exit_count, mmio_count, hvc_count, timer_count, wfi_count,
-                                    );
+                                    print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
                                     return;
                                 }
                                 psci::PsciResult::SystemReset => {
                                     eprintln!("\nPSCI SYSTEM_RESET");
-                                    print_exit_stats(
-                                        exit_count, mmio_count, hvc_count, timer_count, wfi_count,
-                                    );
+                                    print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
                                     return;
                                 }
                             }
                         } else {
-                            // Unknown HVC — log and return error
-                            eprintln!("Unknown HVC: x0=0x{:x}", x0);
+                            eprintln!("Unknown {}: x0=0x{:x}", if is_smc { "SMC" } else { "HVC" }, x0);
                             unsafe {
                                 check_hv(
                                     hvf::hv_vcpu_set_reg(vcpu, hvf::HV_REG_X0, u64::MAX),
@@ -392,53 +355,16 @@ fn run_linux_vcpu_loop(
                                 );
                             }
                         }
-                    }
 
-                    // SMC from AArch64
-                    0x17 => {
-                        hvc_count += 1;
-                        let x0 = unsafe { hvf::vcpu_get_reg(vcpu, hvf::HV_REG_X0) };
-
-                        // PSCI can also come via SMC
-                        if let Some(result) = psci::handle_psci(x0 as u32) {
-                            match result {
-                                psci::PsciResult::Return(val) => unsafe {
-                                    check_hv(
-                                        hvf::hv_vcpu_set_reg(vcpu, hvf::HV_REG_X0, val),
-                                        "set x0 psci",
-                                    );
-                                },
-                                psci::PsciResult::SystemOff => {
-                                    eprintln!("\nPSCI SYSTEM_OFF (via SMC)");
-                                    print_exit_stats(
-                                        exit_count, mmio_count, hvc_count, timer_count, wfi_count,
-                                    );
-                                    return;
-                                }
-                                psci::PsciResult::SystemReset => {
-                                    eprintln!("\nPSCI SYSTEM_RESET (via SMC)");
-                                    print_exit_stats(
-                                        exit_count, mmio_count, hvc_count, timer_count, wfi_count,
-                                    );
-                                    return;
-                                }
-                            }
-                        } else {
-                            eprintln!("Unknown SMC: x0=0x{:x}", x0);
+                        // SMC traps don't auto-advance PC; HVC does
+                        if is_smc {
                             unsafe {
+                                let pc = hvf::vcpu_get_reg(vcpu, hvf::HV_REG_PC);
                                 check_hv(
-                                    hvf::hv_vcpu_set_reg(vcpu, hvf::HV_REG_X0, u64::MAX),
-                                    "set x0 err",
+                                    hvf::hv_vcpu_set_reg(vcpu, hvf::HV_REG_PC, pc + 4),
+                                    "advance PC past SMC",
                                 );
                             }
-                        }
-                        // SMC traps don't auto-advance PC; we must skip the instruction
-                        unsafe {
-                            let pc = hvf::vcpu_get_reg(vcpu, hvf::HV_REG_PC);
-                            check_hv(
-                                hvf::hv_vcpu_set_reg(vcpu, hvf::HV_REG_PC, pc + 4),
-                                "advance PC past SMC",
-                            );
                         }
                     }
 
@@ -601,26 +527,8 @@ fn handle_mmio(
 /// Handle trapped MSR/MRS (system register access, EC=0x18).
 /// Used for timer register trapping.
 fn handle_sys_reg_trap(vcpu: u64, syndrome: u64, vtimer: &mut VirtualTimer) {
-    // Decode ISS for MSR/MRS:
-    // bit 0: direction (0=write/MSR, 1=read/MRS)
-    // bits 4:1: CRm
-    // bits 8:5: Rt (register)
-    // bits 11:9: CRn (but encoding is different)
-    // bits 13:12: Op1 (but in ISS encoding)
-    // bits 16:14: Op2
-    // bits 19:17: Op0
-    // bit 20: Op1 high bit
-    //
-    // Actually the ISS encoding for MSR/MRS traps is:
-    // [24]: CV (condition valid)
-    // [23:20]: COND
-    // [19:17]: Op0
-    // [16:14]: Op2
-    // [13:10]: CRn
-    // [9:5]: Rt
-    // [4:1]: CRm
-    // [0]: direction (1=read, 0=write)
-
+    // ISS encoding for MSR/MRS traps (EC=0x18):
+    // [19:17]: Op0, [16:14]: Op2, [13:10]: CRn, [9:5]: Rt, [4:1]: CRm, [0]: direction
     let direction = syndrome & 1; // 1 = read (MRS), 0 = write (MSR)
     let crm = (syndrome >> 1) & 0xf;
     let rt = ((syndrome >> 5) & 0x1f) as u32;
@@ -667,9 +575,9 @@ fn handle_sys_reg_trap(vcpu: u64, syndrome: u64, vtimer: &mut VirtualTimer) {
                 let val = unsafe { hvf::vcpu_get_reg(vcpu, rt) };
                 vtimer.write_tval(val);
             }
-            // CNTV_TVAL_EL0 read
+            // CNTV_TVAL_EL0 read: remaining ticks = cval - counter
             (3, 0, 1) => {
-                let val = vtimer.counter.wrapping_sub(vtimer.read_cval()) as i32;
+                let val = vtimer.read_cval().wrapping_sub(vtimer.counter) as i32;
                 unsafe {
                     check_hv(
                         hvf::hv_vcpu_set_reg(vcpu, rt, val as u64),
@@ -749,4 +657,59 @@ fn print_exit_stats(exits: u64, mmio: u64, hvc: u64, timer: u64, wfi: u64) {
     eprintln!("  timer:       {}", timer);
     eprintln!("  WFI:         {}", wfi);
     eprintln!("  other:       {}", exits - mmio - hvc - timer - wfi);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a data abort syndrome value for testing.
+    /// EC=0x24 is the exception class (already shifted out by caller).
+    fn make_data_abort_syndrome(
+        isv: bool,
+        sas: u32,  // 0=byte, 1=hw, 2=word, 3=dw
+        sse: bool,
+        srt: u32,  // register index
+        wnr: bool, // write=true
+    ) -> u64 {
+        let mut s: u64 = 0;
+        if isv { s |= 1 << 24; }
+        s |= ((sas as u64) & 3) << 22;
+        if sse { s |= 1 << 21; }
+        s |= ((srt as u64) & 0x1f) << 16;
+        if wnr { s |= 1 << 6; }
+        s
+    }
+
+    #[test]
+    fn decode_word_write() {
+        let syndrome = make_data_abort_syndrome(true, 2, false, 5, true);
+        let access = decode_data_abort(syndrome, 0x0900_0000).unwrap();
+        assert!(access.is_write);
+        assert_eq!(access.len, 4);
+        assert_eq!(access.reg, 5);
+        assert_eq!(access.addr, 0x0900_0000);
+    }
+
+    #[test]
+    fn decode_byte_read() {
+        let syndrome = make_data_abort_syndrome(true, 0, false, 10, false);
+        let access = decode_data_abort(syndrome, 0x0900_0018).unwrap();
+        assert!(!access.is_write);
+        assert_eq!(access.len, 1);
+        assert_eq!(access.reg, 10);
+    }
+
+    #[test]
+    fn decode_dword_access() {
+        let syndrome = make_data_abort_syndrome(true, 3, false, 0, false);
+        let access = decode_data_abort(syndrome, 0x1000).unwrap();
+        assert_eq!(access.len, 8);
+    }
+
+    #[test]
+    fn decode_without_isv_returns_none() {
+        let syndrome = make_data_abort_syndrome(false, 2, false, 5, true);
+        assert!(decode_data_abort(syndrome, 0x0900_0000).is_none());
+    }
 }

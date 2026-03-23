@@ -112,3 +112,108 @@ impl VirtualTimer {
         self.timer_expired()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counter_advances_by_fixed_increment() {
+        let mut vt = VirtualTimer::new();
+        assert_eq!(vt.counter, 0);
+        let v1 = vt.read_counter();
+        let v2 = vt.read_counter();
+        assert_eq!(v1, INCREMENT_PER_READ);
+        assert_eq!(v2, INCREMENT_PER_READ * 2);
+    }
+
+    #[test]
+    fn timer_not_pending_when_disabled() {
+        let mut vt = VirtualTimer::new();
+        vt.write_cval(0); // deadline in the past
+        vt.read_counter(); // advance past 0
+        assert!(!vt.check_pending()); // ctl=0, timer disabled
+    }
+
+    #[test]
+    fn timer_pending_when_enabled_and_expired() {
+        let mut vt = VirtualTimer::new();
+        vt.write_ctl(1); // enable, unmask
+        vt.write_cval(10); // deadline at 10
+        // Advance counter past deadline
+        for _ in 0..10 {
+            vt.read_counter();
+        }
+        assert!(vt.counter >= 10);
+        assert!(vt.check_pending());
+    }
+
+    #[test]
+    fn timer_not_pending_when_masked() {
+        let mut vt = VirtualTimer::new();
+        vt.write_ctl(3); // enable + mask (IMASK=1)
+        vt.write_cval(0); // expired
+        vt.read_counter();
+        assert!(!vt.check_pending());
+    }
+
+    #[test]
+    fn ctl_istatus_reflects_expiry() {
+        let mut vt = VirtualTimer::new();
+        vt.write_ctl(1); // enable
+        vt.write_cval(100);
+        // Not expired yet
+        assert_eq!(vt.read_ctl() & (1 << 2), 0);
+        // Advance past deadline
+        vt.counter = 200;
+        assert_ne!(vt.read_ctl() & (1 << 2), 0);
+    }
+
+    #[test]
+    fn write_tval_sets_cval_relative() {
+        let mut vt = VirtualTimer::new();
+        vt.counter = 1000;
+        vt.write_tval(500); // tval=500 -> cval=1500
+        assert_eq!(vt.cval, 1500);
+    }
+
+    #[test]
+    fn write_tval_handles_negative() {
+        let mut vt = VirtualTimer::new();
+        vt.counter = 1000;
+        // -100 as u64 (sign-extended from i32)
+        vt.write_tval((-100i32) as u64);
+        assert_eq!(vt.cval, 900);
+    }
+
+    #[test]
+    fn wfi_warps_to_deadline() {
+        let mut vt = VirtualTimer::new();
+        vt.write_ctl(1); // enable
+        vt.write_cval(1_000_000);
+        assert_eq!(vt.counter, 0);
+        let inject = vt.handle_wfi();
+        assert!(inject);
+        assert_eq!(vt.counter, 1_000_000);
+    }
+
+    #[test]
+    fn wfi_without_timer_advances_10ms() {
+        let mut vt = VirtualTimer::new();
+        // Timer disabled (ctl=0)
+        let inject = vt.handle_wfi();
+        assert!(!inject);
+        assert_eq!(vt.counter, COUNTER_FREQ_HZ / 100);
+    }
+
+    #[test]
+    fn wfi_with_expired_timer_fires_immediately() {
+        let mut vt = VirtualTimer::new();
+        vt.write_ctl(1);
+        vt.write_cval(10);
+        vt.counter = 100; // already past deadline
+        let inject = vt.handle_wfi();
+        assert!(inject);
+        assert_eq!(vt.counter, 100); // counter unchanged
+    }
+}

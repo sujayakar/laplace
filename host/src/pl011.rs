@@ -64,3 +64,48 @@ impl Pl011 {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contains_range() {
+        let uart = Pl011::new(0x0900_0000);
+        assert!(uart.contains(0x0900_0000));
+        assert!(uart.contains(0x0900_0FFF));
+        assert!(!uart.contains(0x0900_1000));
+        assert!(!uart.contains(0x08FF_FFFF));
+    }
+
+    #[test]
+    fn flag_register_reports_tx_empty() {
+        let uart = Pl011::new(0x0900_0000);
+        let fr = uart.read(UARTFR, 4);
+        assert_ne!(fr & FR_TXFE as u64, 0, "TX FIFO should be empty");
+        assert_ne!(fr & FR_RXFE as u64, 0, "RX FIFO should be empty");
+    }
+
+    #[test]
+    fn write_to_data_register_does_not_panic() {
+        let uart = Pl011::new(0x0900_0000);
+        uart.write(UARTDR, b'A' as u64, 1);
+        uart.write(UARTDR, b'\n' as u64, 1);
+    }
+
+    #[test]
+    fn config_writes_accepted_silently() {
+        let uart = Pl011::new(0x0900_0000);
+        uart.write(UARTIBRD, 0x1234, 4);
+        uart.write(UARTCR, 0x0301, 4);
+        uart.write(UARTIMSC, 0, 4);
+        uart.write(UARTICR, 0xFFFF, 4);
+    }
+
+    #[test]
+    fn unknown_register_reads_zero() {
+        let uart = Pl011::new(0x0900_0000);
+        assert_eq!(uart.read(0x100, 4), 0);
+        assert_eq!(uart.read(0xFFC, 4), 0);
+    }
+}
