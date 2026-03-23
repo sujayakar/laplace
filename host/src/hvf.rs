@@ -189,8 +189,10 @@ extern "C" {
         value: *const HvSimdFpUchar16,
     ) -> HvReturn;
 
-    // vtimer mask
+    // vtimer mask and offset
     pub fn hv_vcpu_set_vtimer_mask(vcpu: HvVcpu, vtimer_is_masked: bool) -> HvReturn;
+    pub fn hv_vcpu_set_vtimer_offset(vcpu: HvVcpu, vtimer_offset: u64) -> HvReturn;
+    pub fn hv_vcpu_get_vtimer_offset(vcpu: HvVcpu, vtimer_offset: *mut u64) -> HvReturn;
 
     // Pending interrupt injection
     pub fn hv_vcpu_set_pending_interrupt(

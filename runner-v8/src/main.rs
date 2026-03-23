@@ -74,15 +74,12 @@ fn main() {
             }
             eprintln!("[runner-v8] READY (waiting for JS in mailbox)");
 
-            // Spin until mailbox content changes
-            loop {
-                let first = unsafe { std::ptr::read_volatile(mailbox) };
-                if first != READY_MAGIC[0] { break; }
-                std::hint::spin_loop();
-            }
-
-            // Read JS from mailbox
-            read_mailbox_str(mailbox as *const u8).to_string()
+            // Spin until mailbox content changes.
+            // After fork-restore, the host replaces the mailbox page.
+            // The stale mmap may SIGBUS, so we re-mmap after detecting change.
+            // Spin with fresh mmap each iteration to survive CoW fork
+            let code = spin_for_mailbox_change();
+            code
         } else {
             // Can't access mailbox — use default
             "console.log('Hello from V8!', 1+2)".to_string()
@@ -123,6 +120,21 @@ fn console_log_callback(
     }
     let _ = writeln!(std::io::stdout(), "{}", parts.join(" "));
     let _ = std::io::stdout().flush();
+}
+
+fn spin_for_mailbox_change() -> String {
+    loop {
+        let fresh = map_mailbox_rw();
+        if let Some(ptr) = fresh {
+            let first = unsafe { std::ptr::read_volatile(ptr) };
+            if first != READY_MAGIC[0] {
+                let code = read_mailbox_str(ptr as *const u8).to_string();
+                return code;
+            }
+            unsafe { libc::munmap(ptr as *mut libc::c_void, MAILBOX_SIZE); }
+        }
+        std::hint::spin_loop();
+    }
 }
 
 fn map_mailbox_rw() -> Option<*mut u8> {

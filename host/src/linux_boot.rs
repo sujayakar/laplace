@@ -6,6 +6,10 @@
 use std::path::Path;
 use std::ptr;
 
+extern "C" {
+    fn mach_absolute_time() -> u64;
+}
+
 use crate::dtb;
 use crate::hvf;
 use crate::hvf::check_hv;
@@ -548,6 +552,20 @@ pub fn cmd_snapshot_linux(
     // GIC state
     std::fs::write(template_dir.join("gic.state"), &gic_state).expect("write gic.state");
 
+    // Save vtimer offset and current mach_absolute_time for timer continuity
+    let vtimer_offset = unsafe {
+        let mut offset: u64 = 0;
+        check_hv(hvf::hv_vcpu_get_vtimer_offset(vcpu, &mut offset), "get vtimer offset");
+        offset
+    };
+    let mach_time = unsafe { mach_absolute_time() };
+    // The guest counter was: mach_time - vtimer_offset
+    let guest_counter_at_snapshot = mach_time - vtimer_offset;
+    let timer_meta = format!("vtimer_offset={}\nmach_time={}\nguest_counter={}\n",
+        vtimer_offset, mach_time, guest_counter_at_snapshot);
+    std::fs::write(template_dir.join("timer.meta"), &timer_meta).expect("write timer.meta");
+    eprintln!("Timer: offset={} guest_counter={}", vtimer_offset, guest_counter_at_snapshot);
+
     // Mailbox memory (separate from guest RAM since it's at a different GPA)
     let mailbox_bytes = unsafe { std::slice::from_raw_parts(mailbox_mem, LINUX_MAILBOX_SIZE) };
     std::fs::write(template_dir.join("mailbox.mem"), mailbox_bytes).expect("write mailbox.mem");
@@ -594,11 +612,18 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
             hvf::HV_MEMORY_READ | hvf::HV_MEMORY_WRITE), "hv_vm_map mailbox fork");
     }
 
-    // Set up fresh GIC without restoring state.
-    // TODO: investigate if GIC state restore breaks timer PPI routing.
+    // Restore GIC state (required for timer PPI 27 routing)
     setup_gic();
-    // Skip hv_gic_set_state for now — fresh GIC lets the kernel
-    // reinitialize interrupt routing on the first timer tick.
+    let gic_state_path = template_dir.join("gic.state");
+    if gic_state_path.exists() {
+        let gic_state = std::fs::read(&gic_state_path).expect("read gic.state");
+        unsafe {
+            check_hv(
+                hvf::hv_gic_set_state(gic_state.as_ptr(), gic_state.len()),
+                "hv_gic_set_state",
+            );
+        }
+    }
 
     // Create vCPU and restore CPU state
     let mut vcpu: u64 = 0;
@@ -606,20 +631,30 @@ pub fn cmd_fork_linux(template_dir: &Path, mailbox_data: &[u8]) {
     unsafe {
         check_hv(hvf::hv_vcpu_create(&mut vcpu, &mut exit_ptr, ptr::null()), "hv_vcpu_create fork");
         check_hv(hvf::hv_vcpu_set_sys_reg(vcpu, hvf::HV_SYS_REG_MPIDR_EL1, 0x8000_0000), "set MPIDR");
+
+        // Step 1: Restore all CPU registers (GPR, sys regs incl CNTV_CVAL/CTL, SIMD)
         template.cpu_state.restore(vcpu);
 
-        // After restoring from snapshot, the vtimer's CNTV_CVAL is likely
-        // in the past (the real counter kept ticking during snapshot/fork).
-        // Force an immediate timer interrupt by setting CNTV_CVAL to 0
-        // (guaranteed past) and enabling the timer, then unmasking.
-        check_hv(
-            hvf::hv_vcpu_set_sys_reg(vcpu, hvf::HV_SYS_REG_CNTV_CVAL_EL0, 0),
-            "set CNTV_CVAL to 0 for immediate timer",
-        );
-        check_hv(
-            hvf::hv_vcpu_set_sys_reg(vcpu, hvf::HV_SYS_REG_CNTV_CTL_EL0, 1),
-            "enable CNTV_CTL",
-        );
+        // Step 2: Set vtimer offset AFTER restoring sys regs (QEMU order).
+        // This ensures CNTVCT_EL0 = mach_absolute_time() - offset resumes
+        // from the guest's counter value at snapshot time. HVF re-evaluates
+        // the timer comparison (CNTVCT >= CNTV_CVAL) with the correct offset.
+        let timer_meta_path = template_dir.join("timer.meta");
+        if timer_meta_path.exists() {
+            let meta = std::fs::read_to_string(&timer_meta_path).expect("read timer.meta");
+            let mut guest_counter: u64 = 0;
+            for line in meta.lines() {
+                if let Some(v) = line.strip_prefix("guest_counter=") {
+                    guest_counter = v.parse().unwrap_or(0);
+                }
+            }
+            let now = mach_absolute_time();
+            let new_offset = now - guest_counter;
+            check_hv(hvf::hv_vcpu_set_vtimer_offset(vcpu, new_offset), "set vtimer offset");
+            eprintln!("Restored vtimer: guest_counter={} new_offset={}", guest_counter, new_offset);
+        }
+
+        // Step 3: Unmask vtimer so HVF delivers VTIMER_ACTIVATED
         check_hv(hvf::hv_vcpu_set_vtimer_mask(vcpu, false), "unmask vtimer fork");
     }
 
@@ -811,10 +846,18 @@ fn run_linux_vcpu_loop(
                 );
             }
         }
-        // Ensure vtimer is unmasked before every entry so HVF can
-        // deliver VTIMER_ACTIVATED exits when the timer fires.
+        // QEMU-style hvf_sync_vtimer: if vtimer was masked (after a
+        // VTIMER_ACTIVATED exit), check if the guest EOI'd the timer
+        // interrupt (CNTV_CTL.ISTATUS cleared). If so, unmask.
         unsafe {
-            let _ = hvf::hv_vcpu_set_vtimer_mask(vcpu, false);
+            let ctl = hvf::vcpu_get_sys_reg(vcpu, hvf::HV_SYS_REG_CNTV_CTL_EL0);
+            let enabled = (ctl & 1) != 0;
+            let imask = (ctl & 2) != 0;
+            let istatus = (ctl & 4) != 0;
+            // Unmask if: timer not asserting (ISTATUS cleared or masked)
+            if !(enabled && !imask && istatus) {
+                let _ = hvf::hv_vcpu_set_vtimer_mask(vcpu, false);
+            }
         }
 
         unsafe {
