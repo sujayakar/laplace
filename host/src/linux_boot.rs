@@ -14,6 +14,11 @@ use crate::vtimer::VirtualTimer;
 
 use crate::{alloc_pages, page_align};
 
+/// Sentinel written by init to the inbox when the VM is ready for snapshot.
+/// Must match init/src/main.rs.
+#[allow(dead_code)]
+const CONVEX_READY: &[u8] = b"CONVEX_READY";
+
 /// Guest memory layout for Linux boot.
 /// We place RAM at a standard base address and use the top of RAM for DTB.
 const GUEST_RAM_BASE: u64 = 0x4000_0000;
@@ -245,7 +250,7 @@ fn install_sigusr1_handler() {
     INIT.call_once(|| {
         unsafe {
             let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = noop_signal_handler as usize;
+            sa.sa_sigaction = noop_signal_handler as *const () as usize;
             sa.sa_flags = 0; // no SA_RESTART: let KVM_RUN return EINTR
             libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut());
         }
@@ -350,10 +355,16 @@ fn setup_cpu_for_linux(vcpu: &VcpuHandle, kernel_entry: u64, dtb_addr: u64) {
     vcpu.set_sys_reg(SysReg::MPIDR_EL1, 0x8000_0000);
 
     // Try to set CNTHCTL_EL2 to trap timer register accesses.
-    // On KVM, this should work natively.
+    // On KVM with full EL2 support, this enables deterministic timer.
+    // On pKVM (Asahi Linux), this register is not writable — fall back
+    // to binary patching via CONVEX_PATCH_TIMER env var.
     match vcpu.try_set_sys_reg(SysReg::CNTHCTL_EL2, 0) {
         Ok(()) => eprintln!("Timer trapping enabled via CNTHCTL_EL2"),
-        Err(e) => eprintln!("CNTHCTL_EL2 not available ({}), using real-time timer", e),
+        Err(e) => eprintln!(
+            "CNTHCTL_EL2 not available ({}). Timer is non-deterministic. \
+             Set CONVEX_PATCH_TIMER=1 for deterministic mode (slower boot).",
+            e
+        ),
     }
 
     // KVM manages the vtimer directly — no manual mask/unmask needed
@@ -501,8 +512,8 @@ fn run_linux_vcpu_loop(
                 canceled_count += 1;
                 // Check if init has written READY to the inbox
                 if let Some(mbox) = mailbox_ptr {
-                    let content = unsafe { std::slice::from_raw_parts(mbox, 12) };
-                    if content == b"CONVEX_READY" {
+                    let content = unsafe { std::slice::from_raw_parts(mbox, CONVEX_READY.len()) };
+                    if content == CONVEX_READY {
                         eprintln!("Init signaled READY via inbox");
                         print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
                         return VmExitReason::Ready;
