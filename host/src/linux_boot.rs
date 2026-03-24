@@ -894,12 +894,7 @@ pub fn cmd_snapshot_linux(
     let mem_bytes = unsafe { std::slice::from_raw_parts(mem, ram_size) };
     std::fs::write(&mem_path, mem_bytes).expect("write guest.mem");
 
-    let template = Template {
-        cpu_state,
-        mem_path: mem_path.clone(),
-        mem_size: ram_size,
-        guest_base: GUEST_RAM_BASE,
-    };
+    let template = Template::new(cpu_state, mem_path.clone(), ram_size, GUEST_RAM_BASE);
     template.save(template_dir);
 
     // Save whether timer was patched (fork needs to create MMIO hole)

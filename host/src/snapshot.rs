@@ -102,9 +102,16 @@ pub struct Template {
     pub mem_path: std::path::PathBuf,
     pub mem_size: usize,
     pub guest_base: u64,
+    /// Cached memfd for CoW mmap. Created on first use, reused across forks.
+    /// Using memfd avoids re-reading the file from disk on each fork.
+    memfd: std::cell::Cell<i32>,
 }
 
 impl Template {
+    pub fn new(cpu_state: CpuState, mem_path: std::path::PathBuf, mem_size: usize, guest_base: u64) -> Self {
+        Template { cpu_state, mem_path, mem_size, guest_base, memfd: std::cell::Cell::new(-1) }
+    }
+
     pub fn save(&self, dir: &Path) {
         std::fs::create_dir_all(dir).expect("create template dir");
 
@@ -140,30 +147,82 @@ impl Template {
             mem_path: dir.join("guest.mem"),
             mem_size,
             guest_base,
+            memfd: std::cell::Cell::new(-1),
         }
     }
 
-    pub fn mmap_cow_memory(&self) -> *mut u8 {
-        let fd = unsafe {
-            let c_path = std::ffi::CString::new(self.mem_path.to_str().unwrap()).unwrap();
-            libc::open(c_path.as_ptr(), libc::O_RDONLY)
+    /// Get or create a memfd backed by the snapshot memory.
+    /// The memfd is created once and reused across forks (serve mode).
+    fn get_or_create_memfd(&self) -> i32 {
+        let fd = self.memfd.get();
+        if fd >= 0 {
+            return fd;
+        }
+
+        // Create memfd and copy snapshot memory into it
+        let name = std::ffi::CString::new("laplace-snapshot").unwrap();
+        let memfd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(memfd >= 0, "memfd_create failed: {}", std::io::Error::last_os_error());
+
+        // Size the memfd
+        assert_eq!(
+            unsafe { libc::ftruncate(memfd, self.mem_size as i64) },
+            0,
+            "ftruncate memfd failed"
+        );
+
+        // Map memfd as shared, copy snapshot data in, then unmap
+        let dst = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                self.mem_size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                memfd,
+                0,
+            )
         };
-        assert!(fd >= 0, "open template memory file failed");
+        assert_ne!(dst, libc::MAP_FAILED, "mmap memfd for copy failed");
+
+        // Read snapshot file into memfd
+        let data = std::fs::read(&self.mem_path).expect("read guest.mem");
+        assert_eq!(data.len(), self.mem_size, "guest.mem size mismatch");
+        unsafe {
+            ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut u8, self.mem_size);
+            libc::munmap(dst, self.mem_size);
+        }
+
+        self.memfd.set(memfd);
+        memfd
+    }
+
+    /// Create a CoW memory mapping from the snapshot.
+    /// Uses memfd (in-memory, no disk I/O after first load) with MAP_NORESERVE
+    /// (don't reserve swap space for the CoW region — pages are allocated on demand).
+    pub fn mmap_cow_memory(&self) -> *mut u8 {
+        let fd = self.get_or_create_memfd();
 
         let ptr = unsafe {
             libc::mmap(
                 ptr::null_mut(),
                 self.mem_size,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE,
+                libc::MAP_PRIVATE | libc::MAP_NORESERVE,
                 fd,
                 0,
             )
         };
-        unsafe { libc::close(fd); }
-
         assert_ne!(ptr, libc::MAP_FAILED, "mmap MAP_PRIVATE failed");
         ptr as *mut u8
+    }
+}
+
+impl Drop for Template {
+    fn drop(&mut self) {
+        let fd = self.memfd.get();
+        if fd >= 0 {
+            unsafe { libc::close(fd); }
+        }
     }
 }
 

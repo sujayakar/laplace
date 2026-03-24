@@ -242,7 +242,7 @@ pub fn cmd_snapshot(guest_elf_path: &Path, template_dir: &Path) {
     let mem_bytes = unsafe { std::slice::from_raw_parts(mem, mem_size) };
     std::fs::write(&mem_path, mem_bytes).expect("write guest.mem");
 
-    let template = Template { cpu_state, mem_path: mem_path.clone(), mem_size, guest_base: GUEST_BASE };
+    let template = Template::new(cpu_state, mem_path.clone(), mem_size, GUEST_BASE);
     template.save(template_dir);
 
     drop(vcpu); // destroys vCPU
