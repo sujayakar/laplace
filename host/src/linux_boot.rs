@@ -266,11 +266,10 @@ fn spawn_watchdog(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::JoinH
     let stop_clone = stop.clone();
     let iterations = (duration_secs as u64) * 10;
 
-    // Get the thread ID of the current (vCPU-running) thread so we can signal it.
-    let vcpu_tid = unsafe { libc::syscall(libc::SYS_gettid) as i32 };
-
     #[cfg(target_os = "linux")]
     install_sigusr1_handler();
+    #[cfg(target_os = "linux")]
+    let vcpu_tid = unsafe { libc::syscall(libc::SYS_gettid) as i32 };
 
     let handle = std::thread::spawn(move || {
         for _ in 0..iterations {
@@ -278,9 +277,12 @@ fn spawn_watchdog(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::JoinH
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
-            // Send SIGUSR1 to the vCPU thread to force KVM_RUN to return EINTR
             #[cfg(target_os = "linux")]
             unsafe { libc::syscall(libc::SYS_tgkill, libc::getpid(), vcpu_tid, libc::SIGUSR1); }
+            // On macOS, hv_vcpus_exit would be called here via vcpu.force_exit(),
+            // but we don't have a Send reference to the vcpu from another thread.
+            // The HVF backend's original code used the raw vcpu handle directly.
+            // TODO: Make force_exit thread-safe on HVF.
         }
     });
     (handle, stop)
@@ -297,6 +299,7 @@ fn spawn_watchdog_fast(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let iterations = (duration_secs as u64) * 1000;
+    #[cfg(target_os = "linux")]
     let vcpu_tid = unsafe { libc::syscall(libc::SYS_gettid) as i32 };
 
     let handle = std::thread::spawn(move || {
@@ -590,13 +593,10 @@ fn handle_mmio(
         }
     }
 
-    // On HVF, we need to advance PC past the faulting MMIO instruction.
-    // On KVM, the kernel advances PC automatically.
-    #[cfg(target_os = "macos")]
-    {
-        let pc = vcpu.get_reg(hypervisor::REG_PC);
-        vcpu.set_reg(hypervisor::REG_PC, pc + 4);
-    }
+    // PC advancement:
+    // - HVF: done inside hypervisor/hvf.rs run() when decoding the data abort
+    // - KVM: done automatically by the kernel
+    // No manual PC advance needed here.
 }
 
 fn handle_sys_reg_trap(vcpu: &VcpuHandle, syndrome: u64) {

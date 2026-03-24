@@ -388,34 +388,39 @@ impl VcpuHandle {
     }
 
     /// Get a system register. Returns 0 if the register is not available
-    /// on this KVM (e.g., pKVM restricts some registers).
+    /// on this KVM (ENOENT — e.g., pKVM restricts some registers).
+    /// Panics on unexpected errors (wrong encoding, kernel bug).
     pub fn get_sys_reg(&self, reg: SysReg) -> u64 {
         let id = sys_reg_to_kvm(reg);
         let mut bytes = [0u8; 8];
         match self.vcpu.get_one_reg(id, &mut bytes) {
             Ok(_) => u64::from_le_bytes(bytes),
-            Err(e) => {
-                // ENOENT (2) means the register is not available on this KVM.
-                // Return 0 and log once for debugging.
+            Err(ref e) if e.errno() == libc::ENOENT => {
+                // Register not available on this KVM (pKVM restriction).
                 static WARNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                 if WARNED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 5 {
-                    eprintln!("KVM: get_sys_reg({:?}) unavailable: {}", reg, e);
+                    eprintln!("KVM: get_sys_reg({:?}) unavailable (ENOENT)", reg);
                 }
                 0
             }
+            Err(e) => panic!("KVM get_one_reg({:?}) failed: {}", reg, e),
         }
     }
 
-    /// Set a system register. Silently ignores if the register is not
-    /// available on this KVM.
+    /// Set a system register. Silently ignores ENOENT (register not available
+    /// on this KVM). Panics on unexpected errors.
     pub fn set_sys_reg(&self, reg: SysReg, val: u64) {
         let id = sys_reg_to_kvm(reg);
         let bytes = val.to_le_bytes();
-        if let Err(e) = self.vcpu.set_one_reg(id, &bytes) {
-            static WARNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            if WARNED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 5 {
-                eprintln!("KVM: set_sys_reg({:?}) unavailable: {}", reg, e);
+        match self.vcpu.set_one_reg(id, &bytes) {
+            Ok(_) => {}
+            Err(ref e) if e.errno() == libc::ENOENT => {
+                static WARNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                if WARNED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 5 {
+                    eprintln!("KVM: set_sys_reg({:?}) unavailable (ENOENT)", reg);
+                }
             }
+            Err(e) => panic!("KVM set_one_reg({:?}) failed: {}", reg, e),
         }
     }
 
