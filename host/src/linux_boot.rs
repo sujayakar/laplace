@@ -236,14 +236,36 @@ fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>, quiet:
     }
 }
 
+/// Install a no-op SIGUSR1 handler so we can use it to interrupt KVM_RUN.
+/// Must be called before spawning any watchdog threads.
+#[cfg(target_os = "linux")]
+fn install_sigusr1_handler() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = noop_signal_handler as usize;
+            sa.sa_flags = 0; // no SA_RESTART: let KVM_RUN return EINTR
+            libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut());
+        }
+    });
+}
+
 /// Spawn a watchdog thread that periodically forces VM exits so we can
-/// check status and inject timer interrupts.
-/// On KVM, timer interrupts are handled in-kernel, so the watchdog mainly
-/// serves to check for the READY sentinel during snapshot boot.
+/// check for the READY sentinel during snapshot boot.
+/// On KVM, sends a signal to the vCPU thread to cause KVM_RUN to return EINTR.
+/// On HVF, calls hv_vcpus_exit.
 fn spawn_watchdog(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::JoinHandle<()>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let iterations = (duration_secs as u64) * 10;
+
+    // Get the thread ID of the current (vCPU-running) thread so we can signal it.
+    let vcpu_tid = unsafe { libc::syscall(libc::SYS_gettid) as i32 };
+
+    #[cfg(target_os = "linux")]
+    install_sigusr1_handler();
 
     let handle = std::thread::spawn(move || {
         for _ in 0..iterations {
@@ -251,19 +273,26 @@ fn spawn_watchdog(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::JoinH
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
-            // On KVM, we don't need to force-exit the vCPU for timer ticks.
-            // The kernel's GIC handles timer interrupts in-kernel.
-            // For checking READY, the vCPU will exit on PSCI/MMIO naturally.
+            // Send SIGUSR1 to the vCPU thread to force KVM_RUN to return EINTR
+            #[cfg(target_os = "linux")]
+            unsafe { libc::syscall(libc::SYS_tgkill, libc::getpid(), vcpu_tid, libc::SIGUSR1); }
         }
     });
     (handle, stop)
 }
 
+#[cfg(target_os = "linux")]
+extern "C" fn noop_signal_handler(_sig: libc::c_int) {}
+
 /// Like spawn_watchdog but with 1ms sleep intervals for low-latency forks.
 fn spawn_watchdog_fast(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::JoinHandle<()>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    #[cfg(target_os = "linux")]
+    install_sigusr1_handler();
+
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let iterations = (duration_secs as u64) * 1000;
+    let vcpu_tid = unsafe { libc::syscall(libc::SYS_gettid) as i32 };
 
     let handle = std::thread::spawn(move || {
         for _ in 0..iterations {
@@ -271,6 +300,8 @@ fn spawn_watchdog_fast(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
+            #[cfg(target_os = "linux")]
+            unsafe { libc::syscall(libc::SYS_tgkill, libc::getpid(), vcpu_tid, libc::SIGUSR1); }
         }
     });
     (handle, stop)

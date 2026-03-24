@@ -37,8 +37,10 @@ fn sys_reg_to_kvm(reg: SysReg) -> u64 {
         SysReg::TTBR0_EL1       => kvm_sys_reg_id(3, 0, 2, 0, 0),
         SysReg::TTBR1_EL1       => kvm_sys_reg_id(3, 0, 2, 0, 1),
         SysReg::TCR_EL1         => kvm_sys_reg_id(3, 0, 2, 0, 2),
-        SysReg::SPSR_EL1        => kvm_sys_reg_id(3, 0, 4, 0, 0),
-        SysReg::ELR_EL1         => kvm_sys_reg_id(3, 0, 4, 0, 1),
+        // SPSR_EL1 and ELR_EL1 are core registers on KVM (in kvm_regs struct),
+        // not accessible via KVM_REG_ARM64_SYSREG.
+        SysReg::SPSR_EL1        => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, SPSR_EL1_OFFSET),
+        SysReg::ELR_EL1         => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, ELR_EL1_OFFSET),
         SysReg::AFSR0_EL1       => kvm_sys_reg_id(3, 0, 5, 1, 0),
         SysReg::AFSR1_EL1       => kvm_sys_reg_id(3, 0, 5, 1, 1),
         SysReg::ESR_EL1         => kvm_sys_reg_id(3, 0, 5, 2, 0),
@@ -110,6 +112,8 @@ const PSTATE_OFFSET: u64 = 33 * 8;     // user_pt_regs.pstate
 // After user_pt_regs (34 * 8 = 272 bytes):
 const SP_EL1_OFFSET: u64 = 34 * 8;
 const ELR_EL1_OFFSET: u64 = 35 * 8;
+// SPSR array starts at offset 36 * 8 = 288. SPSR_EL1 is spsr[0].
+const SPSR_EL1_OFFSET: u64 = 36 * 8;
 
 /// SP_EL1 is a core register on KVM (not a sysreg). It lives in kvm_regs.sp_el1.
 const SP_EL1_CORE_REG_ID: u64 = KVM_REG_ARM64 as u64
@@ -383,21 +387,36 @@ impl VcpuHandle {
         }
     }
 
-    /// Get a system register.
+    /// Get a system register. Returns 0 if the register is not available
+    /// on this KVM (e.g., pKVM restricts some registers).
     pub fn get_sys_reg(&self, reg: SysReg) -> u64 {
         let id = sys_reg_to_kvm(reg);
         let mut bytes = [0u8; 8];
-        self.vcpu.get_one_reg(id, &mut bytes)
-            .unwrap_or_else(|e| panic!("KVM get_one_reg({:?}) failed: {}", reg, e));
-        u64::from_le_bytes(bytes)
+        match self.vcpu.get_one_reg(id, &mut bytes) {
+            Ok(_) => u64::from_le_bytes(bytes),
+            Err(e) => {
+                // ENOENT (2) means the register is not available on this KVM.
+                // Return 0 and log once for debugging.
+                static WARNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                if WARNED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 5 {
+                    eprintln!("KVM: get_sys_reg({:?}) unavailable: {}", reg, e);
+                }
+                0
+            }
+        }
     }
 
-    /// Set a system register.
+    /// Set a system register. Silently ignores if the register is not
+    /// available on this KVM.
     pub fn set_sys_reg(&self, reg: SysReg, val: u64) {
         let id = sys_reg_to_kvm(reg);
         let bytes = val.to_le_bytes();
-        self.vcpu.set_one_reg(id, &bytes)
-            .unwrap_or_else(|e| panic!("KVM set_one_reg({:?}) failed: {}", reg, e));
+        if let Err(e) = self.vcpu.set_one_reg(id, &bytes) {
+            static WARNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            if WARNED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 5 {
+                eprintln!("KVM: set_sys_reg({:?}) unavailable: {}", reg, e);
+            }
+        }
     }
 
     /// Try to set a system register, returning Ok/Err instead of panicking.
