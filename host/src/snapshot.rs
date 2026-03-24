@@ -110,9 +110,6 @@ pub struct Template {
     pub mem_path: std::path::PathBuf,
     pub mem_size: usize,
     pub guest_base: u64,
-    /// Cached memfd for CoW mmap. Created on first use, reused across forks.
-    /// Using memfd avoids re-reading the file from disk on each fork.
-    memfd: std::cell::Cell<i32>,
 }
 
 impl Template {
@@ -127,7 +124,6 @@ impl Template {
             mem_path,
             mem_size,
             guest_base,
-            memfd: std::cell::Cell::new(-1),
         }
     }
 
@@ -166,107 +162,36 @@ impl Template {
             mem_path: dir.join("guest.mem"),
             mem_size,
             guest_base,
-            memfd: std::cell::Cell::new(-1),
         }
     }
 
-    /// Get or create a memfd backed by the snapshot memory (Linux only).
-    /// The memfd is created once and reused across forks (serve mode).
-    #[cfg(target_os = "linux")]
-    fn get_or_create_memfd(&self) -> i32 {
-        let fd = self.memfd.get();
-        if fd >= 0 {
-            return fd;
+    /// Create a CoW memory mapping from the snapshot file.
+    /// Uses MAP_PRIVATE (copy-on-write) so each fork gets its own pages.
+    /// Pages are loaded lazily from the kernel page cache — no eager copy.
+    pub fn mmap_cow_memory(&self) -> *mut u8 {
+        let c_path = std::ffi::CString::new(self.mem_path.to_str().unwrap()).unwrap();
+        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY) };
+        assert!(fd >= 0, "open template memory file failed");
+
+        let mut flags = libc::MAP_PRIVATE;
+        #[cfg(target_os = "linux")]
+        {
+            flags |= libc::MAP_NORESERVE;
         }
 
-        let name = std::ffi::CString::new("laplace-snapshot").unwrap();
-        let memfd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
-        assert!(
-            memfd >= 0,
-            "memfd_create failed: {}",
-            std::io::Error::last_os_error()
-        );
-
-        let ret = unsafe { libc::ftruncate(memfd, self.mem_size as i64) };
-        assert_eq!(ret, 0, "ftruncate memfd failed");
-
-        let dst = unsafe {
+        let ptr = unsafe {
             libc::mmap(
                 ptr::null_mut(),
                 self.mem_size,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                memfd,
+                flags,
+                fd,
                 0,
             )
         };
-        assert_ne!(dst, libc::MAP_FAILED, "mmap memfd for copy failed");
-
-        let data = std::fs::read(&self.mem_path).expect("read guest.mem");
-        assert_eq!(data.len(), self.mem_size, "guest.mem size mismatch");
-        unsafe {
-            ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut u8, self.mem_size);
-            libc::munmap(dst, self.mem_size);
-        }
-
-        self.memfd.set(memfd);
-        memfd
-    }
-
-    /// Create a CoW memory mapping from the snapshot.
-    /// Linux: uses memfd (in-memory, no disk I/O after first load) with MAP_NORESERVE.
-    /// macOS: uses file-backed MAP_PRIVATE.
-    pub fn mmap_cow_memory(&self) -> *mut u8 {
-        #[cfg(target_os = "linux")]
-        {
-            let fd = self.get_or_create_memfd();
-            let ptr = unsafe {
-                libc::mmap(
-                    ptr::null_mut(),
-                    self.mem_size,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE | libc::MAP_NORESERVE,
-                    fd,
-                    0,
-                )
-            };
-            assert_ne!(ptr, libc::MAP_FAILED, "mmap MAP_PRIVATE failed");
-            ptr as *mut u8
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            let c_path = std::ffi::CString::new(self.mem_path.to_str().unwrap()).unwrap();
-            let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY) };
-            assert!(fd >= 0, "open template memory file failed");
-            let ptr = unsafe {
-                libc::mmap(
-                    ptr::null_mut(),
-                    self.mem_size,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE,
-                    fd,
-                    0,
-                )
-            };
-            unsafe {
-                libc::close(fd);
-            }
-            assert_ne!(ptr, libc::MAP_FAILED, "mmap MAP_PRIVATE failed");
-            #[allow(clippy::needless_return)]
-            return ptr as *mut u8;
-        }
-    }
-}
-
-impl Drop for Template {
-    fn drop(&mut self) {
-        let fd = self.memfd.get();
-        if fd >= 0 {
-            unsafe {
-                libc::close(fd);
-            }
-        }
+        unsafe { libc::close(fd) };
+        assert_ne!(ptr, libc::MAP_FAILED, "mmap MAP_PRIVATE failed");
+        ptr as *mut u8
     }
 }
 

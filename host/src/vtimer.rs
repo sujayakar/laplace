@@ -12,9 +12,8 @@ pub const COUNTER_FREQ_HZ: u64 = 24_000_000;
 
 /// How many counter ticks to advance per CNTVCT read.
 /// 240000 ticks = 10 milliseconds at 24 MHz.
-/// Each read is a VM exit (~1-2μs real time). High increment makes
-/// delay loops and timer deadlines pass quickly. Trade-off: time
-/// resolution is coarse but boot completes in reasonable wall-clock time.
+/// Each read is a VM exit (~100μs on pKVM with BRK patching).
+/// This value was tuned for reasonable boot speed + fork performance.
 const INCREMENT_PER_READ: u64 = 240_000;
 
 pub struct VirtualTimer {
