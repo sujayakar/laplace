@@ -2,11 +2,12 @@
 
 ## Project
 
-Lightweight hypervisor for running JavaScript deterministically in hardware-isolated Linux VMs. Development target: aarch64 macOS (Apple Silicon) using Hypervisor.framework. Production target: Linux/KVM with Zeroboot-style CoW fork.
+Lightweight hypervisor for running JavaScript deterministically in hardware-isolated Linux VMs. Cross-platform: macOS (Apple Silicon) using Hypervisor.framework, Linux using KVM. Production target: Linux/KVM with Zeroboot-style CoW fork.
 
-The project has two phases:
+The project has three phases:
 - **Phase 1 (M0-M5, completed):** Bare-metal guest with QuickJS, proving HVF + CoW fork + determinism. See PLAN.md.
-- **Phase 2 (M9-M12, active):** Real Linux kernel in VM with V8/Boa. See PLAN-LINUX.md.
+- **Phase 2 (M9-M12, completed):** Real Linux kernel in VM with V8/Boa on HVF. See PLAN-LINUX.md.
+- **Phase 3 (active):** KVM backend for Linux, cross-hypervisor abstraction, Zeroboot fork.
 
 ## Current architecture (Phase 2 — Linux VM)
 
@@ -27,8 +28,11 @@ Guest VM (single vCPU)
     ├── Signals ready on fd 3
     └── Blocks on stdin, evals JS when received
 
-Host process (macOS)
-├── HVF bindings (hvf.rs)
+Host process (macOS or Linux)
+├── Hypervisor abstraction (hypervisor/)
+│   ├── types.rs — shared types (SimdReg, VcpuExit, SysReg, IccReg)
+│   ├── hvf.rs — macOS backend (Hypervisor.framework)
+│   └── kvm.rs — Linux backend (KVM ioctls)
 ├── Linux boot (linux_boot.rs) — boot, snapshot, fork
 ├── DTB generation (dtb.rs) — CPU, memory, GIC, PL011, timer
 ├── PL011 UART emulation (pl011.rs)
@@ -60,7 +64,22 @@ UART base:         0x0900_0000  (host/src/dtb.rs, host/src/pl011.rs)
 - **VMs are ephemeral.** Each invocation gets its own VM, destroyed after use.
 - **Inbox/outbox for data, pipes for IPC.** Host writes JS to inbox. Init reads it and pipes to runner. Runner stdout flows back through output pipe → init → outbox → host reads result. Runner never touches /dev/mem.
 
-## Hypervisor.framework (HVF) specifics
+## Cross-hypervisor abstraction
+
+The `hypervisor/` module provides a compile-time backend selection via `cfg(target_os)`:
+- **macOS:** `hypervisor/hvf.rs` — Hypervisor.framework FFI bindings
+- **Linux:** `hypervisor/kvm.rs` — KVM ioctls via `kvm-ioctls`/`kvm-bindings` crates
+
+Both backends expose: `VmHandle` (VM lifecycle, memory mapping, GIC), `VcpuHandle` (run, register get/set, MMIO read-back), `GicHandle` (SPI injection, state save/restore).
+
+Key differences:
+- **MMIO exits:** HVF returns data-abort syndrome (must decode + advance PC). KVM returns `KVM_EXIT_MMIO` with decoded addr/data/len (PC auto-advanced).
+- **MMIO reads:** HVF writes result to guest register. KVM writes result to `kvm_run.mmio.data` via `complete_mmio_read()`.
+- **GIC:** HVF uses `hv_gic_create()` with opaque state blob. KVM uses `KVM_CREATE_DEVICE(VGIC_V3)` with per-register attributes.
+- **vCPU init:** KVM requires `KVM_ARM_VCPU_INIT` before any register access. vCPU must be created before GIC `CTRL_INIT`.
+- **Timer trapping:** KVM supports `CNTHCTL_EL2` natively (except on pKVM/Asahi). HVF uses binary patching on M1.
+
+## Hypervisor.framework (HVF) specifics (macOS)
 
 - HVF runs the guest at EL1. HVC instructions cause VM exits (EC=0x16).
 - After HVC, PC already points past the instruction — do NOT advance manually.
@@ -69,6 +88,17 @@ UART base:         0x0900_0000  (host/src/dtb.rs, host/src/pl011.rs)
 - GIC emulation is built into HVF (`hv_gic_create`, `hv_gic_set_state`).
 - GIC state must be restored AFTER `hv_vcpu_create` (Apple requirement).
 - SIMD registers (`HvSimdFpUchar16`) require 16-byte alignment (not the default 1-byte).
+
+## KVM specifics (Linux)
+
+- Multiple VMs per process (fd-based API, not global state).
+- vCPU must be initialized with `KVM_ARM_VCPU_INIT` + `KVM_ARM_VCPU_PSCI_0_2` before register access.
+- vCPU must be created BEFORE GIC `CTRL_INIT` (KVM requirement).
+- MMIO reads: caller must write response to `kvm_run.mmio.data` before next `KVM_RUN`.
+- Register access via `KVM_GET_ONE_REG`/`KVM_SET_ONE_REG` with ARM64 encoding.
+- SP_EL0 and SP_EL1 are core registers (not sysregs) — accessed via `kvm_regs` struct offsets.
+- Timer: CNTHCTL_EL2 trapping not available on pKVM (Asahi Linux). Real-time timer used as fallback.
+- PSCI: enabled via `KVM_ARM_VCPU_PSCI_0_2` feature flag at vCPU init. SYSTEM_OFF exits as `KVM_EXIT_SYSTEM_EVENT`.
 
 ## Linux VM boot sequence
 

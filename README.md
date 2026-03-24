@@ -2,7 +2,7 @@
 
 *Named after [Laplace's demon](https://en.wikipedia.org/wiki/Laplace%27s_demon) — the thought experiment that a being with perfect knowledge of every particle's state could predict the future with certainty. Laplace controls every hardware input to the VM (time, entropy, interrupts, CPU identity), making execution perfectly deterministic. And like any good systems project, it runs as a daemon.*
 
-A lightweight hypervisor for running JavaScript in hardware-isolated VMs with deterministic execution and sub-20ms cold starts. Built on Apple Hypervisor.framework (aarch64 macOS), with a path to Linux/KVM for production.
+A lightweight hypervisor for running JavaScript in hardware-isolated VMs with deterministic execution and sub-20ms cold starts. Cross-platform: macOS (Hypervisor.framework) and Linux (KVM).
 
 ## What it does
 
@@ -147,10 +147,15 @@ For large JS bundles, include the bundle in the initramfs as `/bundle.js`. V8 co
 convex-hypervisor/
 ├── host/src/
 │   ├── main.rs          # CLI: run, snapshot, fork, bench, boot-linux, etc.
-│   ├── hvf.rs           # Hand-written FFI bindings for Hypervisor.framework
+│   ├── hypervisor/      # Cross-platform hypervisor abstraction
+│   │   ├── mod.rs       # cfg(target_os) backend selection
+│   │   ├── types.rs     # Shared types: SimdReg, VcpuExit, SysReg, IccReg
+│   │   ├── hvf.rs       # macOS backend (Hypervisor.framework)
+│   │   └── kvm.rs       # Linux backend (KVM ioctls)
 │   ├── linux_boot.rs    # Linux VM lifecycle (boot, snapshot, fork)
 │   ├── dtb.rs           # Device tree blob generation (CPU, memory, GIC, PL011, timer)
 │   ├── pl011.rs         # Minimal PL011 UART emulation
+│   ├── uart8250.rs      # 8250/16550A UART emulation (for Firecracker kernels)
 │   ├── psci.rs          # PSCI v1.1 + SMCCC handler
 │   ├── vtimer.rs        # Deterministic virtual timer (adaptive, event-driven)
 │   ├── snapshot.rs      # CPU state capture/restore + template serialization

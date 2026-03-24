@@ -2,8 +2,7 @@ use std::io::Write;
 use std::path::Path;
 use std::ptr;
 
-use crate::hvf;
-use hvf::{check_hv, HvSimdFpUchar16};
+use crate::hypervisor::{self, SimdReg, SysReg, VcpuHandle, SNAPSHOT_SYS_REGS};
 
 /// Captured CPU state for snapshot/restore.
 pub struct CpuState {
@@ -12,75 +11,56 @@ pub struct CpuState {
     /// System registers (indexed same as SNAPSHOT_SYS_REGS)
     pub sys_regs: Vec<u64>,
     /// SIMD/FP registers Q0-Q31
-    pub simd: [HvSimdFpUchar16; 32],
+    pub simd: [SimdReg; 32],
 }
 
 impl CpuState {
     /// Capture all CPU state from a vCPU.
-    pub unsafe fn capture(vcpu: u64) -> Self {
+    pub fn capture(vcpu: &VcpuHandle) -> Self {
         let mut gpr = [0u64; 35];
         for i in 0..35 {
-            gpr[i] = hvf::vcpu_get_reg(vcpu, i as u32);
+            gpr[i] = vcpu.get_reg(i as u32);
         }
 
-        let mut sys_regs = Vec::with_capacity(hvf::SNAPSHOT_SYS_REGS.len());
-        for &reg_id in hvf::SNAPSHOT_SYS_REGS {
-            sys_regs.push(hvf::vcpu_get_sys_reg(vcpu, reg_id));
+        let mut sys_regs = Vec::with_capacity(SNAPSHOT_SYS_REGS.len());
+        for &reg in SNAPSHOT_SYS_REGS {
+            sys_regs.push(vcpu.get_sys_reg(reg));
         }
 
-        let mut simd = [HvSimdFpUchar16::default(); 32];
+        let mut simd = [SimdReg::default(); 32];
         for i in 0..32 {
-            check_hv(
-                hvf::hv_vcpu_get_simd_fp_reg(vcpu, i as u32, &mut simd[i]),
-                "get simd reg",
-            );
+            simd[i] = vcpu.get_simd_reg(i as u32);
         }
 
-        CpuState {
-            gpr,
-            sys_regs,
-            simd,
-        }
+        CpuState { gpr, sys_regs, simd }
     }
 
     /// Restore all CPU state to a vCPU.
-    pub unsafe fn restore(&self, vcpu: u64) {
+    pub fn restore(&self, vcpu: &VcpuHandle) {
         for i in 0..35 {
-            check_hv(
-                hvf::hv_vcpu_set_reg(vcpu, i as u32, self.gpr[i]),
-                "set gpr",
-            );
+            vcpu.set_reg(i as u32, self.gpr[i]);
         }
 
-        for (idx, &reg_id) in hvf::SNAPSHOT_SYS_REGS.iter().enumerate() {
-            check_hv(
-                hvf::hv_vcpu_set_sys_reg(vcpu, reg_id, self.sys_regs[idx]),
-                "set sys reg",
-            );
+        for (idx, &reg) in SNAPSHOT_SYS_REGS.iter().enumerate() {
+            vcpu.set_sys_reg(reg, self.sys_regs[idx]);
         }
 
         for i in 0..32 {
-            check_hv(
-                hvf::hv_vcpu_set_simd_fp_reg(vcpu, i as u32, &self.simd[i]),
-                "set simd reg",
-            );
+            vcpu.set_simd_reg(i as u32, &self.simd[i]);
         }
     }
 
     /// Serialize to bytes (simple format: raw gpr + sys_reg count + sys_regs + simd).
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        // GPRs: 35 * 8 = 280 bytes
         for &val in &self.gpr {
             buf.extend_from_slice(&val.to_le_bytes());
         }
-        // Sys reg count + values
         let count = self.sys_regs.len() as u32;
         buf.extend_from_slice(&count.to_le_bytes());
         for &val in &self.sys_regs {
             buf.extend_from_slice(&val.to_le_bytes());
         }
-        // SIMD: 32 * 16 = 512 bytes
         for reg in &self.simd {
             buf.extend_from_slice(&reg.0);
         }
@@ -106,17 +86,13 @@ impl CpuState {
             off += 8;
         }
 
-        let mut simd = [HvSimdFpUchar16::default(); 32];
+        let mut simd = [SimdReg::default(); 32];
         for reg in &mut simd {
             reg.0.copy_from_slice(&data[off..off + 16]);
             off += 16;
         }
 
-        CpuState {
-            gpr,
-            sys_regs,
-            simd,
-        }
+        CpuState { gpr, sys_regs, simd }
     }
 }
 
@@ -129,7 +105,6 @@ pub struct Template {
 }
 
 impl Template {
-    /// Save a template to directory.
     pub fn save(&self, dir: &Path) {
         std::fs::create_dir_all(dir).expect("create template dir");
 
@@ -145,7 +120,6 @@ impl Template {
         std::fs::write(dir.join("meta.txt"), meta).expect("write meta");
     }
 
-    /// Load a template from directory.
     pub fn load(dir: &Path) -> Self {
         let state_data = std::fs::read(dir.join("cpu.state")).expect("read cpu.state");
         let cpu_state = CpuState::from_bytes(&state_data);
@@ -161,7 +135,6 @@ impl Template {
             }
         }
 
-        // Memory file is always "guest.mem" in the template directory
         Template {
             cpu_state,
             mem_path: dir.join("guest.mem"),
@@ -170,8 +143,6 @@ impl Template {
         }
     }
 
-    /// Fork a new VM from this template. Returns (host_mem_ptr, mem_size).
-    /// The caller must create the VM and vCPU, then call cpu_state.restore().
     pub fn mmap_cow_memory(&self) -> *mut u8 {
         let fd = unsafe {
             let c_path = std::ffi::CString::new(self.mem_path.to_str().unwrap()).unwrap();
@@ -193,5 +164,39 @@ impl Template {
 
         assert_ne!(ptr, libc::MAP_FAILED, "mmap MAP_PRIVATE failed");
         ptr as *mut u8
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cpu_state_roundtrip() {
+        let state = CpuState {
+            gpr: {
+                let mut g = [0u64; 35];
+                for i in 0..35 {
+                    g[i] = (i as u64) * 0x1111;
+                }
+                g
+            },
+            sys_regs: {
+                let len = SNAPSHOT_SYS_REGS.len();
+                (0..len).map(|i| (i as u64) * 0x1111 + 0xAAAA).collect()
+            },
+            simd: {
+                let mut s = [SimdReg::default(); 32];
+                s[0] = SimdReg([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+                s
+            },
+        };
+
+        let bytes = state.to_bytes();
+        let restored = CpuState::from_bytes(&bytes);
+
+        assert_eq!(state.gpr, restored.gpr);
+        assert_eq!(state.sys_regs, restored.sys_regs);
+        assert_eq!(state.simd, restored.simd);
     }
 }

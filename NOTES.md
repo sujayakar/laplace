@@ -33,3 +33,10 @@
 - **TVAL sign extension**: `as i32 as u64` zero-extends; need `as i32 as i64 as u64`
 - **Initrd placement**: Kernel image_size > file size; BSS overwrote initrd
 - **Spectre HVC**: Kernel patched exception return with HVC; return SMCCC_RET_NOT_REQUIRED
+- **SP_EL1 KVM encoding**: SP_EL1 is a core register on KVM (kvm_regs.sp_el1), not a sysreg
+- **SP_EL0 KVM encoding**: SP_EL0 is user_pt_regs.sp (core register), not a sysreg
+- **KVM vCPU init order**: Must call KVM_ARM_VCPU_INIT before any register get/set
+- **KVM GIC init order**: vCPU must be created BEFORE GIC CTRL_INIT
+- **KVM MMIO read-back**: Must write response to kvm_run.mmio.data before next KVM_RUN
+- **PL011 ID registers**: Linux driver checks PeriphID/CellID at 0xFE0-0xFFC; must return correct values
+- **Firecracker kernel lacks PL011**: Use Cloud Hypervisor kernel for PL011 consistency across platforms

@@ -45,6 +45,17 @@ impl Pl011 {
             UARTFR => (FR_TXFE | FR_RXFE) as u64, // TX empty, RX empty
             UARTMIS => 0,                          // no pending interrupts
             UARTCR => 0x0301,                      // UART enabled, TX enabled, RX enabled
+            // PL011 identification registers (PeriphID and CellID)
+            // These must return the correct values for the Linux PL011 driver
+            // to recognize the device (checked by amba_bus match).
+            0xFE0 => 0x11, // UART_PERIPHID0: partnum[7:0]
+            0xFE4 => 0x10, // UART_PERIPHID1: designer[3:0] | partnum[11:8]
+            0xFE8 => 0x14, // UART_PERIPHID2: revision | designer[7:4] (ARM = 0x41 -> 0x14)
+            0xFEC => 0x00, // UART_PERIPHID3
+            0xFF0 => 0x0D, // UART_CELLID0: 0x0D
+            0xFF4 => 0xF0, // UART_CELLID1: 0xF0
+            0xFF8 => 0x05, // UART_CELLID2: 0x05
+            0xFFC => 0xB1, // UART_CELLID3: 0xB1
             _ => 0,
         }
     }
@@ -106,6 +117,15 @@ mod tests {
     fn unknown_register_reads_zero() {
         let uart = Pl011::new(0x0900_0000);
         assert_eq!(uart.read(0x100, 4), 0);
-        assert_eq!(uart.read(0xFFC, 4), 0);
+    }
+
+    #[test]
+    fn identification_registers() {
+        let uart = Pl011::new(0x0900_0000);
+        // CellID should be 0x0D, 0xF0, 0x05, 0xB1
+        assert_eq!(uart.read(0xFF0, 4), 0x0D);
+        assert_eq!(uart.read(0xFF4, 4), 0xF0);
+        assert_eq!(uart.read(0xFF8, 4), 0x05);
+        assert_eq!(uart.read(0xFFC, 4), 0xB1);
     }
 }

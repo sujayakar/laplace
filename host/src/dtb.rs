@@ -13,11 +13,16 @@ pub const GICD_SIZE: u64 = 0x0001_0000;
 pub const GICR_BASE: u64 = 0x080A_0000;
 pub const GICR_SIZE: u64 = 0x0020_0000;
 
-/// PL011 UART address — matches QEMU virt convention.
+/// UART address — matches QEMU virt convention.
 pub const UART_BASE: u64 = 0x0900_0000;
 pub const UART_SIZE: u64 = 0x0000_1000;
 /// UART interrupt: SPI 1 (intid 33 = 32 + 1)
 pub const UART_SPI: u32 = 1;
+
+/// Whether to use 8250 UART instead of PL011.
+/// With the Cloud Hypervisor kernel, PL011 is available on both platforms.
+/// Set to true only if using a Firecracker kernel (which lacks PL011).
+pub const USE_8250_UART: bool = false;
 
 /// Build a minimal device tree for our Linux VM.
 ///
@@ -126,19 +131,37 @@ pub fn build_dtb(
         fdt.end_node(gic).expect("end intc");
     }
 
-    // Fixed clock for PL011 (dummy — the PL011 driver requires a clock reference)
-    let clk_phandle: u32 = 2;
-    {
-        let clk = fdt.begin_node("apb-pclk").expect("begin clk");
-        fdt.property_string("compatible", "fixed-clock").expect("clk compatible");
-        fdt.property_u32("#clock-cells", 0).expect("clk cells");
-        fdt.property_u32("clock-frequency", 24_000_000).expect("clk freq");
-        fdt.property_u32("phandle", clk_phandle).expect("clk phandle");
-        fdt.end_node(clk).expect("end clk");
-    }
+    if USE_8250_UART {
+        // 8250/16550A UART node (for Firecracker-style kernels)
+        let uart = fdt
+            .begin_node(&format!("uart@{:x}", UART_BASE))
+            .expect("begin uart");
+        fdt.property_string("compatible", "ns16550a")
+            .expect("uart compatible");
+        fdt.property_array_u64("reg", &[UART_BASE, UART_SIZE])
+            .expect("uart reg");
+        fdt.property_array_u32("interrupts", &[0, UART_SPI, 4])
+            .expect("uart interrupts");
+        fdt.property_u32("interrupt-parent", 1)
+            .expect("uart interrupt-parent");
+        fdt.property_u32("clock-frequency", 1843200)
+            .expect("uart clock-frequency");
+        fdt.property_u32("reg-shift", 0)
+            .expect("uart reg-shift");
+        fdt.end_node(uart).expect("end uart");
+    } else {
+        // Fixed clock for PL011 (dummy — the PL011 driver requires a clock reference)
+        let clk_phandle: u32 = 2;
+        {
+            let clk = fdt.begin_node("apb-pclk").expect("begin clk");
+            fdt.property_string("compatible", "fixed-clock").expect("clk compatible");
+            fdt.property_u32("#clock-cells", 0).expect("clk cells");
+            fdt.property_u32("clock-frequency", 24_000_000).expect("clk freq");
+            fdt.property_u32("phandle", clk_phandle).expect("clk phandle");
+            fdt.end_node(clk).expect("end clk");
+        }
 
-    // PL011 UART node
-    {
+        // PL011 UART node
         let uart = fdt
             .begin_node(&format!("pl011@{:x}", UART_BASE))
             .expect("begin pl011");
@@ -146,7 +169,6 @@ pub fn build_dtb(
             .expect("uart compatible");
         fdt.property_array_u64("reg", &[UART_BASE, UART_SIZE])
             .expect("uart reg");
-        // SPI type=0, number=UART_SPI, flags=edge-triggered
         fdt.property_array_u32("interrupts", &[0, UART_SPI, 4])
             .expect("uart interrupts");
         fdt.property_u32("interrupt-parent", 1)
@@ -161,24 +183,35 @@ pub fn build_dtb(
     // Chosen node — boot args + stdout
     {
         let chosen = fdt.begin_node("chosen").expect("begin chosen");
-        let mut bootargs = String::from(
-            "earlycon=pl011,mmio32,0x09000000 \
+        let (earlycon, console_dev) = if USE_8250_UART {
+            ("earlycon=uart8250,mmio,0x09000000", "console=ttyS0")
+        } else {
+            ("earlycon=pl011,mmio32,0x09000000", "console=ttyAMA0")
+        };
+        let mut bootargs = format!(
+            "{} \
              nokaslr \
              norandmaps \
              random.trust_cpu=on \
              nosmp \
              clocksource=arch_sys_counter \
              nohz=off \
-             console=ttyAMA0 \
+             {} \
              lpj=50000 \
              rdinit=/init",
+            earlycon, console_dev,
         );
         if quiet {
             bootargs.push_str(" quiet loglevel=0");
         }
         fdt.property_string("bootargs", &bootargs)
             .expect("bootargs");
-        fdt.property_string("stdout-path", &format!("/pl011@{:x}", UART_BASE))
+        let stdout_path = if USE_8250_UART {
+            format!("/uart@{:x}", UART_BASE)
+        } else {
+            format!("/pl011@{:x}", UART_BASE)
+        };
+        fdt.property_string("stdout-path", &stdout_path)
             .expect("stdout-path");
         if let (Some(start), Some(end)) = (initrd_start, initrd_end) {
             fdt.property_u64("linux,initrd-start", start)

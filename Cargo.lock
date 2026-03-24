@@ -3,11 +3,25 @@
 version = 4
 
 [[package]]
+name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+
+[[package]]
+name = "bitflags"
+version = "2.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
+
+[[package]]
 name = "convex-hypervisor"
 version = "0.1.0"
 dependencies = [
  "convex-shared",
  "goblin",
+ "kvm-bindings",
+ "kvm-ioctls",
  "libc",
  "rand",
  "rand_chacha",
@@ -34,6 +48,27 @@ name = "hvf-spike"
 version = "0.1.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "kvm-bindings"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa4933174d0cc4b77b958578cd45784071cc5ae212c2d78fbd755aaaa6dfa71a"
+dependencies = [
+ "vmm-sys-util",
+]
+
+[[package]]
+name = "kvm-ioctls"
+version = "0.19.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e013ae7fcd2c6a8f384104d16afe7ea02969301ea2bb2a56e44b011ebc907cab"
+dependencies = [
+ "bitflags 2.11.0",
+ "kvm-bindings",
+ "libc",
+ "vmm-sys-util",
 ]
 
 [[package]]
@@ -148,6 +183,16 @@ name = "vm-fdt"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e21282841a059bb62627ce8441c491f09603622cd5a21c43bfedc85a2952f23"
+
+[[package]]
+name = "vmm-sys-util"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d1435039746e20da4f8d507a72ee1b916f7b4b05af7a91c093d2c6561934ede"
+dependencies = [
+ "bitflags 1.3.2",
+ "libc",
+]
 
 [[package]]
 name = "zerocopy"

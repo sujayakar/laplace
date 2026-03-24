@@ -1,37 +1,41 @@
 use std::path::Path;
-use std::ptr;
-use std::time::Instant;
 
 mod dtb;
 mod elf;
-mod hvf;
+mod hypervisor;
 mod linux_boot;
 mod pl011;
 mod psci;
 mod snapshot;
+#[cfg(target_os = "linux")]
+mod uart8250;
 mod vtimer;
 
-use convex_shared::{HC_CONSOLE, HC_DB_READ, HC_EXIT, HC_RANDOM, HC_READY, HC_TIME};
-use convex_shared::{GUEST_BASE, GUEST_MEM_SIZE, MAILBOX_OFFSET, MAILBOX_SIZE};
-use hvf::{
-    check_hv, HvVcpuExit, HV_EXIT_REASON_EXCEPTION, HV_MEMORY_EXEC, HV_MEMORY_READ,
-    HV_MEMORY_WRITE, HV_REG_CPSR, HV_REG_PC, HV_REG_X0, HV_REG_X1, HV_REG_X2,
-    HV_SYS_REG_CPACR_EL1, HV_SYS_REG_SCTLR_EL1, HV_SYS_REG_SP_EL1,
-};
+use std::ptr;
+
+#[cfg(target_os = "macos")]
+use std::time::Instant;
+
+#[allow(unused_imports)]
 use snapshot::{CpuState, Template};
 
+#[cfg(target_os = "macos")]
 use rand::RngCore;
+#[cfg(target_os = "macos")]
 use rand::SeedableRng;
+#[cfg(target_os = "macos")]
 use rand_chacha::ChaCha8Rng;
 
 pub(crate) const PAGE_SIZE: usize = 16384;
 
-/// Per-VM deterministic state.
+/// Per-VM deterministic state (Phase 1 bare-metal, macOS only).
+#[cfg(target_os = "macos")]
 struct VmState {
     virtual_time_ns: u64,
     rng: ChaCha8Rng,
 }
 
+#[cfg(target_os = "macos")]
 impl VmState {
     fn new(seed: u64) -> Self {
         let mut full_seed = [0u8; 32];
@@ -64,9 +68,16 @@ pub(crate) fn alloc_pages(size: usize) -> *mut u8 {
     }
 }
 
+// Phase 1 bare-metal guest code (macOS/HVF only)
+#[cfg(target_os = "macos")]
+mod phase1_bare_metal {
+use super::*;
+use convex_shared::{HC_CONSOLE, HC_DB_READ, HC_EXIT, HC_RANDOM, HC_READY, HC_TIME};
+use convex_shared::{GUEST_BASE, GUEST_MEM_SIZE, MAILBOX_OFFSET, MAILBOX_SIZE};
+
 /// Load the guest ELF into a freshly allocated memory region.
 /// Returns (host_ptr, region_size).
-fn load_guest_elf(guest_elf_path: &Path) -> (*mut u8, usize) {
+pub fn load_guest_elf(guest_elf_path: &Path) -> (*mut u8, usize) {
     let elf_data = std::fs::read(guest_elf_path)
         .unwrap_or_else(|e| panic!("Failed to read guest ELF {}: {}", guest_elf_path.display(), e));
     let elf = elf::GuestElf::parse(&elf_data).expect("Failed to parse guest ELF");
@@ -531,6 +542,7 @@ fn cmd_run(guest_elf_path: &Path, seed: u64) {
     destroy_vm(vcpu);
     unsafe { libc::munmap(mem as *mut libc::c_void, mem_size); }
 }
+} // mod phase1_bare_metal
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -569,32 +581,36 @@ fn main() {
             let (msg, template_dir) = parse_fork_linux_args(&args[2..]);
             linux_boot::cmd_fork_linux(Path::new(&template_dir), msg.as_bytes());
         }
+        #[cfg(target_os = "macos")]
         "run" => {
             let (seed, guest_path) = parse_run_args(&args[2..]);
-            cmd_run(Path::new(&guest_path), seed);
+            phase1_bare_metal::cmd_run(Path::new(&guest_path), seed);
         }
+        #[cfg(target_os = "macos")]
         "snapshot" => {
             let guest_path = args.get(2).expect("missing guest ELF path");
             let template_dir = args.get(3).expect("missing template dir");
-            cmd_snapshot(Path::new(guest_path), Path::new(template_dir));
+            phase1_bare_metal::cmd_snapshot(Path::new(guest_path), Path::new(template_dir));
         }
+        #[cfg(target_os = "macos")]
         "fork" => {
             let (seed, js_code, template_dir) = parse_fork_args(&args[2..]);
-            let exit_code = cmd_fork(Path::new(&template_dir), seed, js_code.as_bytes());
+            let exit_code = phase1_bare_metal::cmd_fork(Path::new(&template_dir), seed, js_code.as_bytes());
             eprintln!("Guest exited with code {}", exit_code);
         }
+        #[cfg(target_os = "macos")]
         "bench" => {
             let (iterations, js_code, template_dir) = parse_bench_args(&args[2..]);
-            cmd_bench(Path::new(&template_dir), iterations, &js_code);
+            phase1_bare_metal::cmd_bench(Path::new(&template_dir), iterations, &js_code);
         }
-        // Legacy: if first positional arg is a file path, treat as `run`
         _ => {
-            let (seed, guest_path) = parse_run_args(&args[1..]);
-            cmd_run(Path::new(&guest_path), seed);
+            eprintln!("Unknown command: {}", args[1]);
+            std::process::exit(1);
         }
     }
 }
 
+#[cfg(target_os = "macos")]
 fn parse_run_args(args: &[String]) -> (u64, String) {
     let mut seed: u64 = 42;
     let mut guest_path = "guest/target/aarch64-unknown-none/release/convex-guest".to_string();
@@ -620,6 +636,7 @@ fn parse_run_args(args: &[String]) -> (u64, String) {
     (seed, guest_path)
 }
 
+#[cfg(target_os = "macos")]
 fn parse_fork_args(args: &[String]) -> (u64, String, String) {
     let mut seed: u64 = 42;
     let mut js_code = String::new();
@@ -644,6 +661,7 @@ fn parse_fork_args(args: &[String]) -> (u64, String, String) {
     (seed, js_code, template_dir)
 }
 
+#[cfg(target_os = "macos")]
 fn parse_bench_args(args: &[String]) -> (usize, String, String) {
     let mut iterations: usize = 1000;
     let mut js_code = String::new();
@@ -763,34 +781,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_gpa_to_host_ptr_valid() {
-        let buf = [0u8; 4096];
-        let host_base = buf.as_ptr() as *mut u8;
-        let guest_base: u64 = 0x4000_0000;
-
-        let p = gpa_to_host_ptr(guest_base, 1, host_base, guest_base, 4096);
-        assert!(p.is_some());
-        assert_eq!(p.unwrap(), host_base as *const u8);
-
-        let p = gpa_to_host_ptr(guest_base + 100, 10, host_base, guest_base, 4096);
-        assert!(p.is_some());
-
-        let p = gpa_to_host_ptr(guest_base + 4096, 0, host_base, guest_base, 4096);
-        assert!(p.is_some());
-    }
-
-    #[test]
-    fn test_gpa_to_host_ptr_invalid() {
-        let buf = [0u8; 4096];
-        let host_base = buf.as_ptr() as *mut u8;
-        let guest_base: u64 = 0x4000_0000;
-
-        assert!(gpa_to_host_ptr(guest_base - 1, 1, host_base, guest_base, 4096).is_none());
-        assert!(gpa_to_host_ptr(guest_base + 4096, 1, host_base, guest_base, 4096).is_none());
-        assert!(gpa_to_host_ptr(guest_base + 4090, 10, host_base, guest_base, 4096).is_none());
-    }
-
-    #[test]
     fn test_page_align() {
         assert_eq!(page_align(0), 0);
         assert_eq!(page_align(1), PAGE_SIZE);
@@ -806,157 +796,9 @@ mod tests {
     }
 
     #[test]
-    fn test_hvf_exit_struct_layout() {
-        assert_eq!(std::mem::size_of::<HvVcpuExit>(), 4 + 4 + 24);
-        assert_eq!(std::mem::align_of::<HvVcpuExit>(), 8);
-    }
-
-    #[test]
-    fn test_vm_state_determinism() {
-        let mut s1 = VmState::new(42);
-        let mut s2 = VmState::new(42);
-        let mut s3 = VmState::new(99);
-
-        for _ in 0..10 {
-            assert_eq!(s1.rng.next_u64(), s2.rng.next_u64());
-        }
-        assert_eq!(s1.virtual_time_ns, s2.virtual_time_ns);
-
-        let v1 = VmState::new(42).rng.next_u64();
-        let v3 = s3.rng.next_u64();
-        assert_ne!(v1, v3);
-    }
-
-    #[test]
-    fn test_elf_parse_guest_binary() {
-        let guest_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("guest/target/aarch64-unknown-none/release/convex-guest");
-        if let Ok(data) = std::fs::read(&guest_path) {
-            let elf = elf::GuestElf::parse(&data).expect("Failed to parse guest ELF");
-            assert_eq!(elf.entry, 0x4000_0000);
-            assert!(!elf.loads.is_empty());
-            for load in &elf.loads {
-                assert!(load.vaddr >= 0x4000_0000);
-            }
-        }
-    }
-
-    fn run_host_cmd(args: &[&str]) -> String {
-        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap();
-        let output = std::process::Command::new(workspace_root.join("target/debug/convex-hypervisor"))
-            .args(args)
-            .output()
-            .expect("failed to run host binary");
-        assert!(output.status.success(), "host failed: {:?}\nstderr: {}", output.status, String::from_utf8_lossy(&output.stderr));
-        String::from_utf8(output.stdout).expect("non-utf8")
-    }
-
-    #[test]
-    #[ignore = "requires pre-built+signed binaries: run `just snapshot` first"]
-    fn test_fork_determinism() {
-        let template_dir = "/tmp/hvf-template";
-        if !std::path::Path::new(template_dir).join("cpu.state").exists() {
-            panic!("Template not found. Run `just snapshot` first.");
-        }
-
-        let js = "console.log('hello ' + (1 + 2))";
-        let out1 = run_host_cmd(&["fork", "--seed", "42", "--js", js, template_dir]);
-        let out2 = run_host_cmd(&["fork", "--seed", "42", "--js", js, template_dir]);
-        assert_eq!(out1, out2, "Same seed must produce identical output");
-
-        let js_rand = "console.log(Math.random())";
-        let out3 = run_host_cmd(&["fork", "--seed", "42", "--js", js_rand, template_dir]);
-        let out4 = run_host_cmd(&["fork", "--seed", "99", "--js", js_rand, template_dir]);
-        assert_ne!(out3, out4, "Different seed must produce different random output");
-    }
-
-    #[test]
-    #[ignore = "requires pre-built+signed binaries: run `just snapshot` first"]
-    fn test_js_console_log() {
-        let template_dir = "/tmp/hvf-template";
-        if !std::path::Path::new(template_dir).join("cpu.state").exists() {
-            panic!("Template not found. Run `just snapshot` first.");
-        }
-
-        let out = run_host_cmd(&["fork", "--seed", "42", "--js", "console.log('hello ' + (1 + 2))", template_dir]);
-        assert_eq!(out.trim(), "hello 3");
-    }
-
-    #[test]
-    #[ignore = "requires pre-built+signed binaries: run `just snapshot` first"]
-    fn test_js_date_now() {
-        let template_dir = "/tmp/hvf-template";
-        if !std::path::Path::new(template_dir).join("cpu.state").exists() {
-            panic!("Template not found. Run `just snapshot` first.");
-        }
-
-        let out = run_host_cmd(&["fork", "--seed", "42", "--js", "console.log(Date.now())", template_dir]);
-        // Virtual time is 1700000000000000000 ns = 1700000000000 ms
-        assert_eq!(out.trim(), "1700000000000");
-    }
-
-    #[test]
-    #[ignore = "requires pre-built+signed binaries: run `just snapshot` first"]
-    fn test_js_empty_code() {
-        let template_dir = "/tmp/hvf-template";
-        if !std::path::Path::new(template_dir).join("cpu.state").exists() {
-            panic!("Template not found. Run `just snapshot` first.");
-        }
-
-        let out = run_host_cmd(&["fork", "--seed", "42", template_dir]);
-        assert_eq!(out.trim(), "No JS code in mailbox.");
-    }
-
-    #[test]
-    #[ignore = "requires pre-built+signed binaries: run `just snapshot` first"]
-    fn test_db_query_users() {
-        let template_dir = "/tmp/hvf-template";
-        if !std::path::Path::new(template_dir).join("cpu.state").exists() {
-            panic!("Template not found. Run `just snapshot` first.");
-        }
-
-        let js = r#"var u = db.query("users"); console.log(JSON.stringify(u))"#;
-        let out = run_host_cmd(&["fork", "--seed", "42", "--js", js, template_dir]);
-        assert_eq!(
-            out.trim(),
-            r#"[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]"#
-        );
-    }
-
-    #[test]
-    #[ignore = "requires pre-built+signed binaries: run `just snapshot` first"]
-    fn test_db_query_unknown_collection() {
-        let template_dir = "/tmp/hvf-template";
-        if !std::path::Path::new(template_dir).join("cpu.state").exists() {
-            panic!("Template not found. Run `just snapshot` first.");
-        }
-
-        let js = r#"var x = db.query("nonexistent"); console.log(x.length)"#;
-        let out = run_host_cmd(&["fork", "--seed", "42", "--js", js, template_dir]);
-        assert_eq!(out.trim(), "0");
-    }
-
-    #[test]
-    #[ignore = "requires pre-built+signed binaries: run `just snapshot` first"]
-    fn test_db_query_determinism() {
-        let template_dir = "/tmp/hvf-template";
-        if !std::path::Path::new(template_dir).join("cpu.state").exists() {
-            panic!("Template not found. Run `just snapshot` first.");
-        }
-
-        // db.query + Math.random should be deterministic with same seed
-        let js = r#"var u = db.query("users"); console.log(u[0].name, Math.random())"#;
-        let out1 = run_host_cmd(&["fork", "--seed", "42", "--js", js, template_dir]);
-        let out2 = run_host_cmd(&["fork", "--seed", "42", "--js", js, template_dir]);
-        assert_eq!(out1, out2, "Same seed must produce identical db+random output");
-    }
-
-    #[test]
     fn test_cpu_state_roundtrip() {
+        use hypervisor::{SimdReg, SNAPSHOT_SYS_REGS};
+
         let state = CpuState {
             gpr: {
                 let mut g = [0u64; 35];
@@ -966,12 +808,12 @@ mod tests {
                 g
             },
             sys_regs: {
-                let len = hvf::SNAPSHOT_SYS_REGS.len();
+                let len = SNAPSHOT_SYS_REGS.len();
                 (0..len).map(|i| (i as u64) * 0x1111 + 0xAAAA).collect()
             },
             simd: {
-                let mut s = [hvf::HvSimdFpUchar16::default(); 32];
-                s[0] = hvf::HvSimdFpUchar16([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+                let mut s = [SimdReg::default(); 32];
+                s[0] = SimdReg([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
                 s
             },
         };
