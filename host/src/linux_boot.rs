@@ -56,24 +56,15 @@ struct LoadedKernel {
 // ── HVC patching (HVF) ──
 
 // HVC immediate encoding for patched timer instructions:
-#[cfg(target_os = "macos")]
 const HVC_COUNTER_READ: u16 = 0x100;
-#[cfg(target_os = "macos")]
 const HVC_FREQ_READ: u16 = 0x140;
-#[cfg(target_os = "macos")]
 const HVC_CTL_READ: u16 = 0x180;
-#[cfg(target_os = "macos")]
 const HVC_CTL_WRITE: u16 = 0x1C0;
-#[cfg(target_os = "macos")]
 const HVC_CVAL_READ: u16 = 0x200;
-#[cfg(target_os = "macos")]
 const HVC_CVAL_WRITE: u16 = 0x240;
-#[cfg(target_os = "macos")]
 const HVC_TVAL_READ: u16 = 0x280;
-#[cfg(target_os = "macos")]
 const HVC_TVAL_WRITE: u16 = 0x2C0;
 
-#[cfg(target_os = "macos")]
 fn encode_hvc(imm: u16) -> u32 {
     0xD400_0002 | ((imm as u32) << 5)
 }
@@ -114,9 +105,9 @@ unsafe fn write_insn(ptr: *mut u8, offset: usize, insn: u32) {
 }
 
 /// Which trap mechanism to use for timer patching.
+#[allow(dead_code)]
 enum TimerPatchMode {
     /// Replace with HVC #imm (HVF — exits to userspace).
-    #[cfg(target_os = "macos")]
     Hvc,
     /// Replace with BRK #imm16 (KVM — debug exit with KVM_SET_GUEST_DEBUG).
     Brk,
@@ -141,45 +132,37 @@ fn patch_timer_reads(
             0xd53b_e040 | // CNTVCT_EL0
             0xd53b_e020   // CNTPCT_EL0
             => match mode {
-                #[cfg(target_os = "macos")]
-                TimerPatchMode::Hvc => encode_hvc(HVC_COUNTER_READ + rt as u16),
+                                TimerPatchMode::Hvc => encode_hvc(HVC_COUNTER_READ + rt as u16),
                 TimerPatchMode::Brk => encode_brk(BRK_COUNTER_READ + rt as u16),
             },
             0xd53b_e000 => match mode { // CNTFRQ_EL0
-                #[cfg(target_os = "macos")]
-                TimerPatchMode::Hvc => encode_hvc(HVC_FREQ_READ + rt as u16),
+                                TimerPatchMode::Hvc => encode_hvc(HVC_FREQ_READ + rt as u16),
                 TimerPatchMode::Brk => encode_brk(BRK_FREQ_READ + rt as u16),
             },
             // Virtual timer control (MRS reads)
             0xd53b_e320 => match mode { // CNTV_CTL_EL0 read
-                #[cfg(target_os = "macos")]
-                TimerPatchMode::Hvc => encode_hvc(HVC_CTL_READ + rt as u16),
+                                TimerPatchMode::Hvc => encode_hvc(HVC_CTL_READ + rt as u16),
                 TimerPatchMode::Brk => encode_brk(BRK_CTL_READ + rt as u16),
             },
             0xd53b_e340 => match mode { // CNTV_CVAL_EL0 read
-                #[cfg(target_os = "macos")]
-                TimerPatchMode::Hvc => encode_hvc(HVC_CVAL_READ + rt as u16),
+                                TimerPatchMode::Hvc => encode_hvc(HVC_CVAL_READ + rt as u16),
                 TimerPatchMode::Brk => encode_brk(BRK_CVAL_READ + rt as u16),
             },
             0xd53b_e300 => match mode { // CNTV_TVAL_EL0 read
-                #[cfg(target_os = "macos")]
-                TimerPatchMode::Hvc => encode_hvc(HVC_TVAL_READ + rt as u16),
+                                TimerPatchMode::Hvc => encode_hvc(HVC_TVAL_READ + rt as u16),
                 TimerPatchMode::Brk => encode_brk(BRK_TVAL_READ + rt as u16),
             },
             // Virtual timer control (MSR writes)
             0xd51b_e320 => match mode { // CNTV_CTL_EL0 write
-                #[cfg(target_os = "macos")]
-                TimerPatchMode::Hvc => encode_hvc(HVC_CTL_WRITE + rt as u16),
+                                TimerPatchMode::Hvc => encode_hvc(HVC_CTL_WRITE + rt as u16),
                 TimerPatchMode::Brk => encode_brk(BRK_CTL_WRITE + rt as u16),
             },
             0xd51b_e340 => match mode { // CNTV_CVAL_EL0 write
-                #[cfg(target_os = "macos")]
-                TimerPatchMode::Hvc => encode_hvc(HVC_CVAL_WRITE + rt as u16),
+                                TimerPatchMode::Hvc => encode_hvc(HVC_CVAL_WRITE + rt as u16),
                 TimerPatchMode::Brk => encode_brk(BRK_CVAL_WRITE + rt as u16),
             },
             0xd51b_e300 => match mode { // CNTV_TVAL_EL0 write
-                #[cfg(target_os = "macos")]
-                TimerPatchMode::Hvc => encode_hvc(HVC_TVAL_WRITE + rt as u16),
+                                TimerPatchMode::Hvc => encode_hvc(HVC_TVAL_WRITE + rt as u16),
                 TimerPatchMode::Brk => encode_brk(BRK_TVAL_WRITE + rt as u16),
             },
             _ => continue,
@@ -951,16 +934,16 @@ pub fn cmd_snapshot_linux(
     //   (KVM_EXIT_MMIO exits to userspace). Must set X18 = TIMER_MMIO_GPA.
     if !has_timer_trapping {
         let kernel_load_offset = KERNEL_OFFSET as usize;
-        #[cfg(target_os = "macos")]
-        let mode = TimerPatchMode::Hvc;
-        #[cfg(target_os = "linux")]
-        let mode = TimerPatchMode::Brk;
+        let mode = if cfg!(target_os = "linux") {
+            TimerPatchMode::Brk
+        } else {
+            TimerPatchMode::Hvc
+        };
         let patched = patch_timer_reads(mem, kernel_load_offset, kernel_file_size, &mode);
         eprintln!(
             "Patched {} timer instructions in snapshot ({} mode)",
             patched,
             match &mode {
-                #[cfg(target_os = "macos")]
                 TimerPatchMode::Hvc => "HVC",
                 TimerPatchMode::Brk => "BRK",
             }

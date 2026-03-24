@@ -2,7 +2,6 @@
 //!
 //! Wraps Apple's Hypervisor.framework with the cross-platform API.
 //! Also re-exports raw FFI types for Phase 1 bare-metal code.
-#![allow(dead_code)]
 
 use std::ptr;
 
