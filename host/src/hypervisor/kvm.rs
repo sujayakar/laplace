@@ -329,10 +329,10 @@ impl VcpuHandle {
                 kvm_ioctls::VcpuExit::SystemEvent(event_type, _flags) => {
                     VcpuExit::SystemEvent { event_type }
                 }
-                kvm_ioctls::VcpuExit::Debug(_) => {
+                kvm_ioctls::VcpuExit::Debug(debug_arch) => {
                     // BRK instruction with guest debug enabled.
-                    // Used for patched timer instructions on pKVM.
-                    VcpuExit::Debug
+                    // debug_arch.hsr contains the ESR — for BRK, ISS = imm16.
+                    VcpuExit::Debug { hsr: debug_arch.hsr }
                 }
                 kvm_ioctls::VcpuExit::Hlt => {
                     VcpuExit::Wfi

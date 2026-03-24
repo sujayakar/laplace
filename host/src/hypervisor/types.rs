@@ -55,7 +55,8 @@ pub enum VcpuExit {
 
     /// Debug exit (BRK instruction with guest debug enabled).
     /// On KVM, triggered by patched timer BRK instructions.
-    Debug,
+    /// `hsr` contains the ESR (exception syndrome) — for BRK, bits 15:0 = imm16.
+    Debug { hsr: u32 },
 
     /// Unknown/unexpected exit.
     Unknown(u32),

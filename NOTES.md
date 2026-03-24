@@ -2,7 +2,7 @@
 
 ## Review process
 
-- Read through all the code carefully
+- Read through all the code carefully, using GPT-5.4 xhigh in the background as a second opinion for review.
 - Write any missing tests, iterate until fixed
 - See if there are any opportunities to use high quality 3rd party crates rather than rolling from scratch (e.g. file format parsers)
 - Go over code organization / duplication
@@ -40,3 +40,9 @@
 - **KVM MMIO read-back**: Must write response to kvm_run.mmio.data before next KVM_RUN
 - **PL011 ID registers**: Linux driver checks PeriphID/CellID at 0xFE0-0xFFC; must return correct values
 - **Firecracker kernel lacks PL011**: Use Cloud Hypervisor kernel for PL011 consistency across platforms
+- **KVM HVC not forwarded**: Non-PSCI HVCs handled in-kernel, not forwarded to userspace; use BRK instead
+- **BRK HSR extraction**: KVM_EXIT_DEBUG provides ESR in hsr field; bits 15:0 = BRK imm16. No guest memory read needed.
+- **MMIO patching doesn't work**: Guest LDR/STR uses VA not GPA; would need kernel linear map VA
+- **VA→GPA at snapshot fails**: Snapshot PC may be in userspace (init), not kernel text
+- **HVF double PC advance**: hvf.rs run() advances PC for MMIO, linux_boot.rs must NOT advance again
+- **SPSR_EL1/ELR_EL1 on KVM**: Core registers (kvm_regs struct), not sysregs; same as SP_EL0/SP_EL1

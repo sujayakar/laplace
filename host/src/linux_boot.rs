@@ -93,15 +93,16 @@ fn encode_brk(imm: u16) -> u32 {
     0xD420_0000 | ((imm as u32) << 5)
 }
 
-// BRK immediate encoding (same scheme as HVC):
-const BRK_COUNTER_READ: u16 = 0x100;
-const BRK_FREQ_READ: u16 = 0x140;
-const BRK_CTL_READ: u16 = 0x180;
-const BRK_CTL_WRITE: u16 = 0x1C0;
-const BRK_CVAL_READ: u16 = 0x200;
-const BRK_CVAL_WRITE: u16 = 0x240;
-const BRK_TVAL_READ: u16 = 0x280;
-const BRK_TVAL_WRITE: u16 = 0x2C0;
+// BRK immediate encoding. Uses 0xE1xx-0xE2xx range to avoid collision with
+// kernel-reserved BRK immediates (BUG=0x800, KASAN=0x9xx, FAULT=0x100, etc.).
+const BRK_COUNTER_READ: u16 = 0xE100;
+const BRK_FREQ_READ: u16 = 0xE140;
+const BRK_CTL_READ: u16 = 0xE180;
+const BRK_CTL_WRITE: u16 = 0xE1C0;
+const BRK_CVAL_READ: u16 = 0xE200;
+const BRK_CVAL_WRITE: u16 = 0xE240;
+const BRK_TVAL_READ: u16 = 0xE280;
+const BRK_TVAL_WRITE: u16 = 0xE2C0;
 
 // ── Common patching infrastructure ──
 
@@ -189,55 +190,47 @@ fn patch_timer_reads(mem: *mut u8, kernel_offset: usize, kernel_file_size: usize
 /// Handle a BRK debug exit for patched timer instructions (KVM).
 /// The BRK immediate encodes the operation type + register, same as HVC.
 /// Returns true if this was a patched timer BRK.
+/// Handle a BRK debug exit for patched timer instructions (KVM).
+/// The HSR (exception syndrome register) contains the BRK immediate in bits 15:0.
+/// The immediate encodes the operation type + register, same scheme as HVC.
+/// Returns true if this was a patched timer BRK.
 fn handle_patched_timer_brk(
     vcpu: &VcpuHandle,
-    pc: u64,
-    guest_mem: *mut u8,
+    hsr: u32,
     vtimer: &mut VirtualTimer,
 ) -> bool {
-    // Read the BRK instruction from guest memory to extract the immediate.
-    // PC points to the BRK instruction (KVM_EXIT_DEBUG doesn't advance PC).
-    let gpa = pc.wrapping_sub(0xFFFF_8000_0000_0000).wrapping_add(GUEST_RAM_BASE);
-    if gpa < GUEST_RAM_BASE || gpa >= GUEST_RAM_BASE + GUEST_RAM_SIZE {
-        return false;
-    }
-    let offset = (gpa - GUEST_RAM_BASE) as usize;
-    let insn = unsafe { ptr::read(guest_mem.add(offset) as *const u32) };
-
-    // Check if it's a BRK instruction: 0xD4200000 | (imm16 << 5)
-    if insn & 0xFFE0001F != 0xD420_0000 {
-        return false;
-    }
-    let imm = ((insn >> 5) & 0xFFFF) as u16;
+    // ESR for BRK: EC=0x3C (bits 31:26), ISS = imm16 (bits 15:0)
+    let imm = (hsr & 0xFFFF) as u16;
     if imm < BRK_COUNTER_READ {
         return false;
     }
 
-    let kind = imm & 0xFFC0;
+    let kind = imm & 0xFFC0; // upper bits select operation
     let rt = (imm & 0x1F) as u32;
 
     match kind {
-        0x100 => {
+        0xE100 => {
             let val = vtimer.read_counter();
             vcpu.set_reg(rt, val);
             if vtimer.check_pending() {
                 vcpu.set_pending_interrupt(true);
             }
         }
-        0x140 => { vcpu.set_reg(rt, crate::vtimer::COUNTER_FREQ_HZ); }
-        0x180 => { vcpu.set_reg(rt, vtimer.read_ctl()); }
-        0x1C0 => { vtimer.write_ctl(vcpu.get_reg(rt)); }
-        0x200 => { vcpu.set_reg(rt, vtimer.read_cval()); }
-        0x240 => { vtimer.write_cval(vcpu.get_reg(rt)); }
-        0x280 => {
+        0xE140 => { vcpu.set_reg(rt, crate::vtimer::COUNTER_FREQ_HZ); }
+        0xE180 => { vcpu.set_reg(rt, vtimer.read_ctl()); }
+        0xE1C0 => { vtimer.write_ctl(vcpu.get_reg(rt)); }
+        0xE200 => { vcpu.set_reg(rt, vtimer.read_cval()); }
+        0xE240 => { vtimer.write_cval(vcpu.get_reg(rt)); }
+        0xE280 => {
             let val = vtimer.read_cval().wrapping_sub(vtimer.counter) as i32 as i64 as u64;
             vcpu.set_reg(rt, val);
         }
-        0x2C0 => { vtimer.write_tval(vcpu.get_reg(rt)); }
+        0xE2C0 => { vtimer.write_tval(vcpu.get_reg(rt)); }
         _ => return false,
     }
 
     // Advance PC past the BRK (KVM_EXIT_DEBUG doesn't auto-advance)
+    let pc = vcpu.get_reg(hypervisor::REG_PC);
     vcpu.set_reg(hypervisor::REG_PC, pc + 4);
     true
 }
@@ -638,15 +631,14 @@ fn run_linux_vcpu_loop(
                 handle_mmio(vcpu, &access, uart);
             }
 
-            VcpuExit::Debug => {
+            VcpuExit::Debug { hsr } => {
                 // BRK instruction from patched timer code (KVM with guest debug).
-                // Read the instruction at PC to identify the timer operation.
-                let pc = vcpu.get_reg(hypervisor::REG_PC);
-                if handle_patched_timer_brk(vcpu, pc, _guest_mem, vtimer) {
+                // The HSR contains the BRK immediate which encodes the timer op.
+                if handle_patched_timer_brk(vcpu, hsr, vtimer) {
                     timer_count += 1;
                 } else {
-                    eprintln!("Unexpected debug exit at PC=0x{:x}", pc);
-                    // Advance past the BRK to avoid infinite loop
+                    let pc = vcpu.get_reg(hypervisor::REG_PC);
+                    eprintln!("Unexpected debug exit at PC=0x{:x} HSR=0x{:x}", pc, hsr);
                     vcpu.set_reg(hypervisor::REG_PC, pc + 4);
                 }
             }
@@ -870,6 +862,9 @@ pub fn cmd_snapshot_linux(
         VmExitReason::Error(e) => panic!("VM error before READY: {}", e),
     }
 
+    // Create template directory early (timer metadata is saved before CPU state)
+    std::fs::create_dir_all(template_dir).expect("create template dir");
+
     // Timer determinism for fork:
     // - If CNTHCTL_EL2 trapping works: deterministic (no patching needed)
     // - HVF without EL2: patch with HVC instructions (exits to userspace)
@@ -887,13 +882,13 @@ pub fn cmd_snapshot_linux(
             patched,
             match &mode { #[cfg(target_os = "macos")] TimerPatchMode::Hvc => "HVC", TimerPatchMode::Brk => "BRK" }
         );
+
+        // Note: no VA-to-GPA offset needed — the BRK immediate is extracted
+        // from the HSR (exception syndrome) in the KVM_EXIT_DEBUG info.
     }
 
     // Save CPU state
     let cpu_state = CpuState::capture(&vcpu);
-
-    // Write template
-    std::fs::create_dir_all(template_dir).expect("create template dir");
 
     let mem_path = template_dir.join("guest.mem");
     let mem_bytes = unsafe { std::slice::from_raw_parts(mem, ram_size) };
