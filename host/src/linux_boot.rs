@@ -15,8 +15,7 @@ use crate::vtimer::VirtualTimer;
 use crate::{alloc_pages, page_align};
 
 /// Sentinel written by init to the inbox when the VM is ready for snapshot.
-/// Must match init/src/main.rs.
-#[allow(dead_code)]
+/// Must match init/src/main.rs. Used in the Canceled exit handler during snapshot.
 const CONVEX_READY: &[u8] = b"CONVEX_READY";
 
 /// Guest memory layout for Linux boot.
@@ -821,7 +820,7 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>, quiet: boo
     unsafe { libc::munmap(mem as *mut libc::c_void, ram_size); }
 }
 
-// ── Snapshot/Fork (stubs for now — will implement in Phase 2) ────────────────
+// ── Snapshot/Fork ────────────────────────────────────────────────────────────
 
 use crate::snapshot::{CpuState, Template};
 
