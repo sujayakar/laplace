@@ -924,8 +924,11 @@ pub fn cmd_snapshot_linux(
 }
 
 pub fn cmd_fork_linux(template_dir: &Path, inbox_data: &[u8]) {
+    let t0 = std::time::Instant::now();
     let template = Template::load(template_dir);
+    let t_load = t0.elapsed();
     let mem = template.mmap_cow_memory();
+    let t_mmap = t0.elapsed();
     let ram_size = template.mem_size;
 
     // Check if the template was built with BRK timer patching
@@ -941,33 +944,43 @@ pub fn cmd_fork_linux(template_dir: &Path, inbox_data: &[u8]) {
     }
 
     let mut vm = VmHandle::create();
+    let t_vm = t0.elapsed();
     vm.map_memory(mem, GUEST_RAM_BASE, ram_size, true);
     vm.map_memory(shared_mem, LINUX_SHARED_GPA, LINUX_SHARED_SIZE, false);
+    let t_map = t0.elapsed();
 
     let mut vcpu = vm.create_vcpu();
     let _gic = vm.create_gic(dtb::GICD_BASE, dtb::GICR_BASE);
+    let t_vcpu_gic = t0.elapsed();
 
     vcpu.set_sys_reg(SysReg::MPIDR_EL1, 0x8000_0000);
-
-    // If template was built with BRK timer patching, enable guest debug
-    // so BRK instructions exit to userspace instead of being delivered
-    // as guest exceptions.
     if needs_guest_debug {
         vcpu.enable_guest_debug();
     }
 
     // TODO: Restore GIC state, ICC regs, vtimer state
-
-    // Restore CPU registers
     template.cpu_state.restore(&vcpu);
+    let t_restore = t0.elapsed();
 
     let uart = Pl011::new(dtb::UART_BASE);
     let mut vtimer = VirtualTimer::new();
 
     let (watchdog, watchdog_stop) = spawn_watchdog_fast(&vcpu, 300);
     let result = run_linux_vcpu_loop(&mut vcpu, mem, ram_size, &uart, &mut vtimer, None);
+    let t_run = t0.elapsed();
     watchdog_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = watchdog.join();
+
+    eprintln!("Fork timing: load={:.1}ms mmap={:.1}ms vm={:.1}ms map={:.1}ms vcpu+gic={:.1}ms restore={:.1}ms run={:.1}ms total={:.1}ms",
+        t_load.as_secs_f64() * 1000.0,
+        (t_mmap - t_load).as_secs_f64() * 1000.0,
+        (t_vm - t_mmap).as_secs_f64() * 1000.0,
+        (t_map - t_vm).as_secs_f64() * 1000.0,
+        (t_vcpu_gic - t_map).as_secs_f64() * 1000.0,
+        (t_restore - t_vcpu_gic).as_secs_f64() * 1000.0,
+        (t_run - t_restore).as_secs_f64() * 1000.0,
+        t_run.as_secs_f64() * 1000.0,
+    );
 
     match result {
         VmExitReason::Exit(code) => {
@@ -1001,6 +1014,99 @@ pub fn cmd_fork_linux(template_dir: &Path, inbox_data: &[u8]) {
     unsafe {
         libc::munmap(mem as *mut libc::c_void, ram_size);
         libc::munmap(shared_mem as *mut libc::c_void, LINUX_SHARED_SIZE);
+    }
+}
+
+/// Serve mode: pre-load the template, then handle multiple requests in a loop.
+/// Avoids process startup overhead by reusing the VM fd across invocations.
+/// Each invocation re-creates vCPU + GIC and re-mmaps memory (CoW).
+/// Reads JS from stdin lines, prints output to stdout.
+pub fn cmd_serve_linux(template_dir: &Path) {
+    let t0 = std::time::Instant::now();
+
+    // Load template and create VM (one-time setup in parent)
+    let template = Template::load(template_dir);
+    let mem = template.mmap_cow_memory();
+    let ram_size = template.mem_size;
+
+    let timer_patched = std::fs::read_to_string(template_dir.join("timer_patched"))
+        .unwrap_or_default();
+    let needs_guest_debug = timer_patched.trim() == "brk";
+
+    // Create shared region (will be re-created in each child via fork CoW)
+    let shared_mem = alloc_pages(LINUX_SHARED_SIZE);
+
+    let setup_time = t0.elapsed();
+    eprintln!("Serve: template loaded in {:.1}ms. Reading JS from stdin...", setup_time.as_secs_f64() * 1000.0);
+
+    use std::io::BufRead;
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let js = match line {
+            Ok(l) if !l.is_empty() => l,
+            Ok(_) => continue,
+            Err(_) => break,
+        };
+
+        let t_start = std::time::Instant::now();
+
+        // Re-mmap guest memory as CoW for this invocation
+        let mem = template.mmap_cow_memory();
+
+        // Fresh shared region for this invocation
+        let shared_mem = alloc_pages(LINUX_SHARED_SIZE);
+        let inbox_data = js.as_bytes();
+        assert!(inbox_data.len() < LINUX_INBOX_SIZE);
+        unsafe {
+            ptr::copy_nonoverlapping(inbox_data.as_ptr(), shared_mem, inbox_data.len());
+            *shared_mem.add(inbox_data.len()) = 0;
+        }
+
+        // Create fresh VM + vCPU + GIC for this invocation
+        let mut vm = VmHandle::create();
+        vm.map_memory(mem, GUEST_RAM_BASE, ram_size, true);
+        vm.map_memory(shared_mem, LINUX_SHARED_GPA, LINUX_SHARED_SIZE, false);
+
+        let mut vcpu = vm.create_vcpu();
+        let _gic = vm.create_gic(dtb::GICD_BASE, dtb::GICR_BASE);
+        vcpu.set_sys_reg(SysReg::MPIDR_EL1, 0x8000_0000);
+        if needs_guest_debug {
+            vcpu.enable_guest_debug();
+        }
+        template.cpu_state.restore(&vcpu);
+
+        let uart = Pl011::new(dtb::UART_BASE);
+        let mut vtimer = VirtualTimer::new();
+        let _result = run_linux_vcpu_loop(&mut vcpu, mem, ram_size, &uart, &mut vtimer, None);
+        let t_done = t_start.elapsed();
+
+        // Read outbox
+        let outbox_ptr = unsafe { shared_mem.add(LINUX_INBOX_SIZE) };
+        let mut outbox_len = 0usize;
+        unsafe {
+            while outbox_len < LINUX_OUTBOX_SIZE && *outbox_ptr.add(outbox_len) != 0 {
+                outbox_len += 1;
+            }
+        }
+        if outbox_len > 0 {
+            let outbox_bytes = unsafe { std::slice::from_raw_parts(outbox_ptr, outbox_len) };
+            use std::io::Write;
+            std::io::stdout().write_all(outbox_bytes).ok();
+            if outbox_bytes.last() != Some(&b'\n') {
+                std::io::stdout().write_all(b"\n").ok();
+            }
+            std::io::stdout().flush().ok();
+        }
+
+        eprintln!("  fork: {:.1}ms", t_done.as_secs_f64() * 1000.0);
+
+        // Cleanup
+        drop(vcpu);
+        drop(vm);
+        unsafe {
+            libc::munmap(mem as *mut libc::c_void, ram_size);
+            libc::munmap(shared_mem as *mut libc::c_void, LINUX_SHARED_SIZE);
+        }
     }
 }
 

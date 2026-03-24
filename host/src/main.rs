@@ -400,6 +400,11 @@ fn main() {
             let (msg, template_dir) = parse_fork_linux_args(&args[2..]);
             linux_boot::cmd_fork_linux(Path::new(&template_dir), msg.as_bytes());
         }
+        "serve-linux" => {
+            // Usage: echo 'console.log(1+1)' | convex-hypervisor serve-linux <template-dir>
+            let template_dir = args.get(2).expect("missing template dir");
+            linux_boot::cmd_serve_linux(Path::new(template_dir));
+        }
         #[cfg(target_os = "macos")]
         "run" => {
             let (seed, guest_path) = parse_run_args(&args[2..]);
