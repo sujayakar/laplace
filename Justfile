@@ -31,6 +31,10 @@ lint:
 test:
     cargo test -p convex-hypervisor -p convex-shared
 
+# Run determinism fuzzing (requires snapshot template)
+test-determinism template="/tmp/kvm-v8-template" runs="5":
+    bash tests/determinism.sh {{template}} {{runs}}
+
 # Download the Cloud Hypervisor aarch64 kernel
 download-kernel:
     mkdir -p kernel
