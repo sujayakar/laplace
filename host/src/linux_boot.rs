@@ -36,6 +36,8 @@ struct LoadedKernel {
     ram_size: usize,
     kernel_entry: u64,
     dtb_addr: u64,
+    /// Kernel file size in bytes (used for timer patching).
+    kernel_file_size: usize,
 }
 
 // ── Timer instruction patching ────────────────────────────────────────────────
@@ -189,17 +191,10 @@ fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>, quiet:
         kernel_data.len()
     };
 
-    let patched = if std::env::var("CONVEX_PATCH_TIMER").is_ok() {
-        patch_timer_reads(mem, kernel_load_offset, kernel_data.len())
-    } else {
-        0
-    };
+    let kernel_file_size = kernel_data.len();
     eprintln!(
-        "Kernel loaded at GPA 0x{:x} (file={}, image_size={}, patched {} timer reads)",
-        kernel_entry,
-        kernel_data.len(),
-        kernel_image_size,
-        patched,
+        "Kernel loaded at GPA 0x{:x} (file={}, image_size={})",
+        kernel_entry, kernel_file_size, kernel_image_size,
     );
 
     // Load initrd after kernel image_size (page-aligned)
@@ -238,6 +233,7 @@ fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>, quiet:
         ram_size,
         kernel_entry,
         dtb_addr,
+        kernel_file_size,
     }
 }
 
@@ -333,7 +329,9 @@ fn setup_shared_region(vm: &mut VmHandle) -> *mut u8 {
     shared_mem
 }
 
-fn setup_cpu_for_linux(vcpu: &VcpuHandle, kernel_entry: u64, dtb_addr: u64) {
+/// Set up CPU state for Linux boot. Returns true if hardware timer
+/// trapping is available (CNTHCTL_EL2), false if binary patching is needed.
+fn setup_cpu_for_linux(vcpu: &VcpuHandle, kernel_entry: u64, dtb_addr: u64) -> bool {
     // PC = kernel entry point
     vcpu.set_reg(hypervisor::REG_PC, kernel_entry);
 
@@ -361,17 +359,20 @@ fn setup_cpu_for_linux(vcpu: &VcpuHandle, kernel_entry: u64, dtb_addr: u64) {
     // On KVM with full EL2 support, this enables deterministic timer.
     // On pKVM (Asahi Linux), this register is not writable — fall back
     // to binary patching via CONVEX_PATCH_TIMER env var.
-    match vcpu.try_set_sys_reg(SysReg::CNTHCTL_EL2, 0) {
-        Ok(()) => eprintln!("Timer trapping enabled via CNTHCTL_EL2"),
-        Err(e) => eprintln!(
-            "CNTHCTL_EL2 not available ({}). Timer is non-deterministic. \
-             Set CONVEX_PATCH_TIMER=1 for deterministic mode (slower boot).",
-            e
-        ),
-    }
+    let has_timer_trapping = match vcpu.try_set_sys_reg(SysReg::CNTHCTL_EL2, 0) {
+        Ok(()) => {
+            eprintln!("Timer trapping enabled via CNTHCTL_EL2");
+            true
+        }
+        Err(e) => {
+            eprintln!("CNTHCTL_EL2 not available ({}) — will use binary patching for determinism", e);
+            false
+        }
+    };
 
     // KVM manages the vtimer directly — no manual mask/unmask needed
     vcpu.set_vtimer_mask(false);
+    has_timer_trapping
 }
 
 /// Why the vCPU loop terminated.
@@ -633,7 +634,7 @@ fn print_exit_stats(exits: u64, mmio: u64, hvc: u64, timer: u64, wfi: u64) {
 /// Boot a Linux kernel.
 pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>, quiet: bool) {
     let loaded = load_kernel_and_initrd(kernel_path, initrd_path, quiet);
-    let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr } = loaded;
+    let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr, .. } = loaded;
 
     let mut vm = VmHandle::create();
     vm.map_memory(mem, GUEST_RAM_BASE, ram_size, true);
@@ -641,7 +642,7 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>, quiet: boo
 
     let mut vcpu = vm.create_vcpu();
     let _gic = vm.create_gic(dtb::GICD_BASE, dtb::GICR_BASE);
-    setup_cpu_for_linux(&vcpu, kernel_entry, dtb_addr);
+    let _has_timer_trapping = setup_cpu_for_linux(&vcpu, kernel_entry, dtb_addr);
 
     let uart = Pl011::new(dtb::UART_BASE);
     let mut vtimer = VirtualTimer::new();
@@ -674,7 +675,7 @@ pub fn cmd_snapshot_linux(
     quiet: bool,
 ) {
     let loaded = load_kernel_and_initrd(kernel_path, initrd_path, quiet);
-    let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr } = loaded;
+    let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr, kernel_file_size } = loaded;
 
     let mut vm = VmHandle::create();
     vm.map_memory(mem, GUEST_RAM_BASE, ram_size, true);
@@ -682,7 +683,7 @@ pub fn cmd_snapshot_linux(
 
     let mut vcpu = vm.create_vcpu();
     let _gic = vm.create_gic(dtb::GICD_BASE, dtb::GICR_BASE);
-    setup_cpu_for_linux(&vcpu, kernel_entry, dtb_addr);
+    let has_timer_trapping = setup_cpu_for_linux(&vcpu, kernel_entry, dtb_addr);
 
     let uart = Pl011::new(dtb::UART_BASE);
     let mut vtimer = VirtualTimer::new();
@@ -702,6 +703,27 @@ pub fn cmd_snapshot_linux(
         VmExitReason::SystemOff => panic!("VM halted before signaling READY"),
         VmExitReason::Exit(c) => panic!("VM exited with code {} before READY", c),
         VmExitReason::Error(e) => panic!("VM error before READY: {}", e),
+    }
+
+    // Timer determinism for fork:
+    // - If CNTHCTL_EL2 trapping works: deterministic (no patching needed)
+    // - If not (pKVM/M1): binary patching works on HVF (HVC exits to userspace)
+    //   but NOT on KVM (HVC is handled in-kernel as PSCI, not forwarded).
+    //   On KVM without CNTHCTL_EL2, timer is non-deterministic for now.
+    //   TODO: Use MMIO-based timer trapping or test on non-pKVM KVM host.
+    #[cfg(target_os = "macos")]
+    if !has_timer_trapping {
+        let kernel_load_offset = KERNEL_OFFSET as usize;
+        let patched = patch_timer_reads(mem, kernel_load_offset, kernel_file_size);
+        eprintln!("Patched {} timer instructions in snapshot for deterministic fork", patched);
+    }
+    #[cfg(target_os = "linux")]
+    if !has_timer_trapping {
+        eprintln!(
+            "WARNING: Timer not deterministic on this KVM (pKVM). \
+             Binary patching not supported on KVM (HVC handled in-kernel). \
+             Use a non-pKVM host for deterministic execution."
+        );
     }
 
     // Save CPU state
