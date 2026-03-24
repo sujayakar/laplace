@@ -7,7 +7,8 @@
 pub mod types;
 
 #[cfg(target_os = "macos")]
-mod hvf;
+#[allow(dead_code)]
+pub(crate) mod hvf;
 
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
