@@ -1,5 +1,5 @@
-use goblin::elf::Elf;
 use goblin::elf::program_header::PT_LOAD;
+use goblin::elf::Elf;
 
 pub struct LoadSegment<'a> {
     pub vaddr: u64,

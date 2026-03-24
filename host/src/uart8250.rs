@@ -22,7 +22,7 @@ const MSR: u64 = 0x06; // Modem Status Register
 const SCR: u64 = 0x07; // Scratch Register
 
 /// LSR bits
-const LSR_DR: u8 = 0x01;   // Data Ready
+const LSR_DR: u8 = 0x01; // Data Ready
 const LSR_THRE: u8 = 0x20; // TX Holding Register Empty
 const LSR_TEMT: u8 = 0x40; // Transmitter Empty
 
@@ -58,15 +58,15 @@ impl Uart8250 {
     pub fn read(&self, offset: u64, _size: usize) -> u64 {
         let dlab = (self.lcr & 0x80) != 0;
         match offset {
-            RBR if !dlab => 0,       // No data to read
-            0x00 if dlab => self.dll as u64,  // Divisor Latch Low
+            RBR if !dlab => 0,               // No data to read
+            0x00 if dlab => self.dll as u64, // Divisor Latch Low
             IER if !dlab => self.ier as u64,
-            0x01 if dlab => self.dlh as u64,  // Divisor Latch High
-            IIR => 0x01,             // No interrupt pending
+            0x01 if dlab => self.dlh as u64, // Divisor Latch High
+            IIR => 0x01,                     // No interrupt pending
             LCR => self.lcr as u64,
             MCR => self.mcr as u64,
             LSR => (LSR_THRE | LSR_TEMT) as u64, // TX always ready, no RX data
-            MSR => 0,                // No modem signals
+            MSR => 0,                            // No modem signals
             SCR => self.scr as u64,
             _ => 0,
         }

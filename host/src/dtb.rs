@@ -42,7 +42,8 @@ pub fn build_dtb(
     let root = fdt.begin_node("").expect("begin root");
     fdt.property_string("compatible", "linux,dummy-virt")
         .expect("compatible");
-    fdt.property_u32("#address-cells", 2).expect("#address-cells");
+    fdt.property_u32("#address-cells", 2)
+        .expect("#address-cells");
     fdt.property_u32("#size-cells", 2).expect("#size-cells");
 
     // CPU node
@@ -52,7 +53,8 @@ pub fn build_dtb(
         fdt.property_u32("#size-cells", 0).expect("cpu #size");
 
         let cpu0 = fdt.begin_node("cpu@0").expect("begin cpu@0");
-        fdt.property_string("device_type", "cpu").expect("cpu device_type");
+        fdt.property_string("device_type", "cpu")
+            .expect("cpu device_type");
         fdt.property_string("compatible", "arm,arm-v8")
             .expect("cpu compatible");
         fdt.property_u32("reg", 0).expect("cpu reg");
@@ -64,8 +66,11 @@ pub fn build_dtb(
 
     // Memory node
     {
-        let mem = fdt.begin_node(&format!("memory@{:x}", mem_base)).expect("begin memory");
-        fdt.property_string("device_type", "memory").expect("mem device_type");
+        let mem = fdt
+            .begin_node(&format!("memory@{:x}", mem_base))
+            .expect("begin memory");
+        fdt.property_string("device_type", "memory")
+            .expect("mem device_type");
         fdt.property_array_u64("reg", &[mem_base, mem_size])
             .expect("mem reg");
         fdt.end_node(mem).expect("end memory");
@@ -146,18 +151,20 @@ pub fn build_dtb(
             .expect("uart interrupt-parent");
         fdt.property_u32("clock-frequency", 1843200)
             .expect("uart clock-frequency");
-        fdt.property_u32("reg-shift", 0)
-            .expect("uart reg-shift");
+        fdt.property_u32("reg-shift", 0).expect("uart reg-shift");
         fdt.end_node(uart).expect("end uart");
     } else {
         // Fixed clock for PL011 (dummy — the PL011 driver requires a clock reference)
         let clk_phandle: u32 = 2;
         {
             let clk = fdt.begin_node("apb-pclk").expect("begin clk");
-            fdt.property_string("compatible", "fixed-clock").expect("clk compatible");
+            fdt.property_string("compatible", "fixed-clock")
+                .expect("clk compatible");
             fdt.property_u32("#clock-cells", 0).expect("clk cells");
-            fdt.property_u32("clock-frequency", 24_000_000).expect("clk freq");
-            fdt.property_u32("phandle", clk_phandle).expect("clk phandle");
+            fdt.property_u32("clock-frequency", 24_000_000)
+                .expect("clk freq");
+            fdt.property_u32("phandle", clk_phandle)
+                .expect("clk phandle");
             fdt.end_node(clk).expect("end clk");
         }
 
@@ -165,8 +172,11 @@ pub fn build_dtb(
         let uart = fdt
             .begin_node(&format!("pl011@{:x}", UART_BASE))
             .expect("begin pl011");
-        fdt.property_string_list("compatible", vec!["arm,pl011".into(), "arm,primecell".into()])
-            .expect("uart compatible");
+        fdt.property_string_list(
+            "compatible",
+            vec!["arm,pl011".into(), "arm,primecell".into()],
+        )
+        .expect("uart compatible");
         fdt.property_array_u64("reg", &[UART_BASE, UART_SIZE])
             .expect("uart reg");
         fdt.property_array_u32("interrupts", &[0, UART_SPI, 4])

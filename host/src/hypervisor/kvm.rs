@@ -30,56 +30,56 @@ const fn kvm_sys_reg_id(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64
 fn sys_reg_to_kvm(reg: SysReg) -> u64 {
     match reg {
         //                              Op0  Op1  CRn  CRm  Op2
-        SysReg::MDSCR_EL1       => kvm_sys_reg_id(2, 0, 0, 2, 2),
-        SysReg::MPIDR_EL1       => kvm_sys_reg_id(3, 0, 0, 0, 5),
-        SysReg::SCTLR_EL1       => kvm_sys_reg_id(3, 0, 1, 0, 0),
-        SysReg::CPACR_EL1       => kvm_sys_reg_id(3, 0, 1, 0, 2),
-        SysReg::TTBR0_EL1       => kvm_sys_reg_id(3, 0, 2, 0, 0),
-        SysReg::TTBR1_EL1       => kvm_sys_reg_id(3, 0, 2, 0, 1),
-        SysReg::TCR_EL1         => kvm_sys_reg_id(3, 0, 2, 0, 2),
+        SysReg::MDSCR_EL1 => kvm_sys_reg_id(2, 0, 0, 2, 2),
+        SysReg::MPIDR_EL1 => kvm_sys_reg_id(3, 0, 0, 0, 5),
+        SysReg::SCTLR_EL1 => kvm_sys_reg_id(3, 0, 1, 0, 0),
+        SysReg::CPACR_EL1 => kvm_sys_reg_id(3, 0, 1, 0, 2),
+        SysReg::TTBR0_EL1 => kvm_sys_reg_id(3, 0, 2, 0, 0),
+        SysReg::TTBR1_EL1 => kvm_sys_reg_id(3, 0, 2, 0, 1),
+        SysReg::TCR_EL1 => kvm_sys_reg_id(3, 0, 2, 0, 2),
         // SPSR_EL1 and ELR_EL1 are core registers on KVM (in kvm_regs struct),
         // not accessible via KVM_REG_ARM64_SYSREG.
-        SysReg::SPSR_EL1        => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, SPSR_EL1_OFFSET),
-        SysReg::ELR_EL1         => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, ELR_EL1_OFFSET),
-        SysReg::AFSR0_EL1       => kvm_sys_reg_id(3, 0, 5, 1, 0),
-        SysReg::AFSR1_EL1       => kvm_sys_reg_id(3, 0, 5, 1, 1),
-        SysReg::ESR_EL1         => kvm_sys_reg_id(3, 0, 5, 2, 0),
-        SysReg::FAR_EL1         => kvm_sys_reg_id(3, 0, 6, 0, 0),
-        SysReg::PAR_EL1         => kvm_sys_reg_id(3, 0, 7, 4, 0),
-        SysReg::MAIR_EL1        => kvm_sys_reg_id(3, 0, 10, 2, 0),
-        SysReg::AMAIR_EL1       => kvm_sys_reg_id(3, 0, 10, 3, 0),
-        SysReg::VBAR_EL1        => kvm_sys_reg_id(3, 0, 12, 0, 0),
-        SysReg::CONTEXTIDR_EL1  => kvm_sys_reg_id(3, 0, 13, 0, 1),
-        SysReg::TPIDR_EL1       => kvm_sys_reg_id(3, 0, 13, 0, 4),
-        SysReg::CNTKCTL_EL1     => kvm_sys_reg_id(3, 0, 14, 1, 0),
-        SysReg::CSSELR_EL1      => kvm_sys_reg_id(3, 1, 0, 0, 0),
+        SysReg::SPSR_EL1 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, SPSR_EL1_OFFSET),
+        SysReg::ELR_EL1 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, ELR_EL1_OFFSET),
+        SysReg::AFSR0_EL1 => kvm_sys_reg_id(3, 0, 5, 1, 0),
+        SysReg::AFSR1_EL1 => kvm_sys_reg_id(3, 0, 5, 1, 1),
+        SysReg::ESR_EL1 => kvm_sys_reg_id(3, 0, 5, 2, 0),
+        SysReg::FAR_EL1 => kvm_sys_reg_id(3, 0, 6, 0, 0),
+        SysReg::PAR_EL1 => kvm_sys_reg_id(3, 0, 7, 4, 0),
+        SysReg::MAIR_EL1 => kvm_sys_reg_id(3, 0, 10, 2, 0),
+        SysReg::AMAIR_EL1 => kvm_sys_reg_id(3, 0, 10, 3, 0),
+        SysReg::VBAR_EL1 => kvm_sys_reg_id(3, 0, 12, 0, 0),
+        SysReg::CONTEXTIDR_EL1 => kvm_sys_reg_id(3, 0, 13, 0, 1),
+        SysReg::TPIDR_EL1 => kvm_sys_reg_id(3, 0, 13, 0, 4),
+        SysReg::CNTKCTL_EL1 => kvm_sys_reg_id(3, 0, 14, 1, 0),
+        SysReg::CSSELR_EL1 => kvm_sys_reg_id(3, 1, 0, 0, 0),
         // SP_EL0 is the user-mode SP. On KVM it's in user_pt_regs.sp (core register).
-        SysReg::SP_EL0          => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, SP_OFFSET),
-        SysReg::TPIDR_EL0       => kvm_sys_reg_id(3, 3, 13, 0, 2),
-        SysReg::TPIDRRO_EL0     => kvm_sys_reg_id(3, 3, 13, 0, 3),
-        SysReg::CNTV_CTL_EL0    => kvm_sys_reg_id(3, 3, 14, 3, 1),
-        SysReg::CNTV_CVAL_EL0   => kvm_sys_reg_id(3, 3, 14, 3, 2),
-        SysReg::CNTP_CTL_EL0    => kvm_sys_reg_id(3, 3, 14, 2, 1),
-        SysReg::CNTP_CVAL_EL0   => kvm_sys_reg_id(3, 3, 14, 2, 2),
-        SysReg::CNTHCTL_EL2     => kvm_sys_reg_id(3, 4, 14, 1, 0),
+        SysReg::SP_EL0 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, SP_OFFSET),
+        SysReg::TPIDR_EL0 => kvm_sys_reg_id(3, 3, 13, 0, 2),
+        SysReg::TPIDRRO_EL0 => kvm_sys_reg_id(3, 3, 13, 0, 3),
+        SysReg::CNTV_CTL_EL0 => kvm_sys_reg_id(3, 3, 14, 3, 1),
+        SysReg::CNTV_CVAL_EL0 => kvm_sys_reg_id(3, 3, 14, 3, 2),
+        SysReg::CNTP_CTL_EL0 => kvm_sys_reg_id(3, 3, 14, 2, 1),
+        SysReg::CNTP_CVAL_EL0 => kvm_sys_reg_id(3, 3, 14, 2, 2),
+        SysReg::CNTHCTL_EL2 => kvm_sys_reg_id(3, 4, 14, 1, 0),
         // SP_EL1 is accessed via core registers on KVM, not as a sysreg.
         // Encode it as the core reg offset into kvm_regs.sp_el1.
         // However, for snapshot compatibility we use the sysreg encoding:
         // MRS/MSR SP_EL1 is accessible at EL2+ only. On KVM, it's exposed
         // via the kvm_regs.sp_el1 core register, not via KVM_REG_ARM64_SYSREG.
         // We handle this specially in get_sys_reg/set_sys_reg.
-        SysReg::SP_EL1          => SP_EL1_CORE_REG_ID, // special: core register, not sysreg
+        SysReg::SP_EL1 => SP_EL1_CORE_REG_ID, // special: core register, not sysreg
         // PAC keys
-        SysReg::APIAKEYLO_EL1   => kvm_sys_reg_id(3, 0, 2, 1, 0),
-        SysReg::APIAKEYHI_EL1   => kvm_sys_reg_id(3, 0, 2, 1, 1),
-        SysReg::APIBKEYLO_EL1   => kvm_sys_reg_id(3, 0, 2, 1, 2),
-        SysReg::APIBKEYHI_EL1   => kvm_sys_reg_id(3, 0, 2, 1, 3),
-        SysReg::APDAKEYLO_EL1   => kvm_sys_reg_id(3, 0, 2, 2, 0),
-        SysReg::APDAKEYHI_EL1   => kvm_sys_reg_id(3, 0, 2, 2, 1),
-        SysReg::APDBKEYLO_EL1   => kvm_sys_reg_id(3, 0, 2, 2, 2),
-        SysReg::APDBKEYHI_EL1   => kvm_sys_reg_id(3, 0, 2, 2, 3),
-        SysReg::APGAKEYLO_EL1   => kvm_sys_reg_id(3, 0, 2, 3, 0),
-        SysReg::APGAKEYHI_EL1   => kvm_sys_reg_id(3, 0, 2, 3, 1),
+        SysReg::APIAKEYLO_EL1 => kvm_sys_reg_id(3, 0, 2, 1, 0),
+        SysReg::APIAKEYHI_EL1 => kvm_sys_reg_id(3, 0, 2, 1, 1),
+        SysReg::APIBKEYLO_EL1 => kvm_sys_reg_id(3, 0, 2, 1, 2),
+        SysReg::APIBKEYHI_EL1 => kvm_sys_reg_id(3, 0, 2, 1, 3),
+        SysReg::APDAKEYLO_EL1 => kvm_sys_reg_id(3, 0, 2, 2, 0),
+        SysReg::APDAKEYHI_EL1 => kvm_sys_reg_id(3, 0, 2, 2, 1),
+        SysReg::APDBKEYLO_EL1 => kvm_sys_reg_id(3, 0, 2, 2, 2),
+        SysReg::APDBKEYHI_EL1 => kvm_sys_reg_id(3, 0, 2, 2, 3),
+        SysReg::APGAKEYLO_EL1 => kvm_sys_reg_id(3, 0, 2, 3, 0),
+        SysReg::APGAKEYHI_EL1 => kvm_sys_reg_id(3, 0, 2, 3, 1),
     }
 }
 
@@ -95,10 +95,7 @@ fn sys_reg_to_kvm(reg: SysReg) -> u64 {
 //   };
 
 fn kvm_core_reg_id(size: u64, byte_offset: u64) -> u64 {
-    KVM_REG_ARM64 as u64
-        | KVM_REG_ARM_CORE as u64
-        | size
-        | (byte_offset / 4) // KVM uses u32 granularity
+    KVM_REG_ARM64 as u64 | KVM_REG_ARM_CORE as u64 | size | (byte_offset / 4) // KVM uses u32 granularity
 }
 
 // Byte offsets into kvm_regs for core registers.
@@ -106,39 +103,37 @@ fn kvm_core_reg_id(size: u64, byte_offset: u64) -> u64 {
 const fn gpr_offset(n: u32) -> u64 {
     (n as u64) * 8 // regs[0..31] are u64, at byte offsets 0, 8, 16, ...
 }
-const SP_OFFSET: u64 = 31 * 8;         // user_pt_regs.sp
-const PC_OFFSET: u64 = 32 * 8;         // user_pt_regs.pc
-const PSTATE_OFFSET: u64 = 33 * 8;     // user_pt_regs.pstate
-// After user_pt_regs (34 * 8 = 272 bytes):
+const SP_OFFSET: u64 = 31 * 8; // user_pt_regs.sp
+const PC_OFFSET: u64 = 32 * 8; // user_pt_regs.pc
+const PSTATE_OFFSET: u64 = 33 * 8; // user_pt_regs.pstate
+                                   // After user_pt_regs (34 * 8 = 272 bytes):
 const SP_EL1_OFFSET: u64 = 34 * 8;
 const ELR_EL1_OFFSET: u64 = 35 * 8;
 // SPSR array starts at offset 36 * 8 = 288. SPSR_EL1 is spsr[0].
 const SPSR_EL1_OFFSET: u64 = 36 * 8;
 
 /// SP_EL1 is a core register on KVM (not a sysreg). It lives in kvm_regs.sp_el1.
-const SP_EL1_CORE_REG_ID: u64 = KVM_REG_ARM64 as u64
-    | KVM_REG_ARM_CORE as u64
-    | KVM_REG_SIZE_U64 as u64
-    | (SP_EL1_OFFSET / 4);
+const SP_EL1_CORE_REG_ID: u64 =
+    KVM_REG_ARM64 as u64 | KVM_REG_ARM_CORE as u64 | KVM_REG_SIZE_U64 as u64 | (SP_EL1_OFFSET / 4);
 // SPSR array: 5 entries at offset 36 * 8
 // const SPSR_OFFSET: u64 = 36 * 8;
 // FP/SIMD state starts after spsr[5] + padding, at offset (36 + 5 + 1) * 8 = 42 * 8
-const FP_REGS_OFFSET: u64 = 42 * 8;    // start of user_fpsimd_state
-// vregs[32] are 128-bit each, total 32 * 16 = 512 bytes
+const FP_REGS_OFFSET: u64 = 42 * 8; // start of user_fpsimd_state
+                                    // vregs[32] are 128-bit each, total 32 * 16 = 512 bytes
 const fn simd_offset(n: u32) -> u64 {
     FP_REGS_OFFSET + (n as u64) * 16
 }
-const FPSR_OFFSET: u64 = FP_REGS_OFFSET + 32 * 16;      // u32 fpsr
-const FPCR_OFFSET: u64 = FP_REGS_OFFSET + 32 * 16 + 4;  // u32 fpcr
+const FPSR_OFFSET: u64 = FP_REGS_OFFSET + 32 * 16; // u32 fpsr
+const FPCR_OFFSET: u64 = FP_REGS_OFFSET + 32 * 16 + 4; // u32 fpcr
 
 /// Map our GPR index (0-34) to KVM core register ID.
 /// 0-30 = x0-x30, 31 = PC, 32 = FPCR, 33 = FPSR, 34 = CPSR/PSTATE.
 fn gpr_to_kvm_id(reg: u32) -> u64 {
     match reg {
         0..=30 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, gpr_offset(reg)),
-        31 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, PC_OFFSET),     // PC
-        32 => kvm_core_reg_id(KVM_REG_SIZE_U32 as u64, FPCR_OFFSET),   // FPCR (32-bit)
-        33 => kvm_core_reg_id(KVM_REG_SIZE_U32 as u64, FPSR_OFFSET),   // FPSR (32-bit)
+        31 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, PC_OFFSET), // PC
+        32 => kvm_core_reg_id(KVM_REG_SIZE_U32 as u64, FPCR_OFFSET), // FPCR (32-bit)
+        33 => kvm_core_reg_id(KVM_REG_SIZE_U32 as u64, FPSR_OFFSET), // FPSR (32-bit)
         34 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, PSTATE_OFFSET), // CPSR/PSTATE
         _ => panic!("invalid GPR index: {}", reg),
     }
@@ -210,13 +205,17 @@ impl VmHandle {
         // On aarch64, we must initialize the vCPU with KVM_ARM_VCPU_INIT
         // before we can get/set any registers.
         let mut kvi = kvm_vcpu_init::default();
-        self.vm.get_preferred_target(&mut kvi)
+        self.vm
+            .get_preferred_target(&mut kvi)
             .expect("KVM_ARM_PREFERRED_TARGET failed");
         // Enable PSCI v0.2+ (the kernel expects PSCI via HVC)
         kvi.features[0] |= 1 << kvm_bindings::KVM_ARM_VCPU_PSCI_0_2;
         vcpu.vcpu_init(&kvi).expect("KVM_ARM_VCPU_INIT failed");
 
-        eprintln!("KVM vCPU created and initialized (target type {})", kvi.target);
+        eprintln!(
+            "KVM vCPU created and initialized (target type {})",
+            kvi.target
+        );
         VcpuHandle { vcpu }
     }
 
@@ -263,7 +262,10 @@ impl VmHandle {
             0,
         );
 
-        eprintln!("KVM GIC created: GICD=0x{:x}, GICR=0x{:x}", gicd_base, gicr_base);
+        eprintln!(
+            "KVM GIC created: GICD=0x{:x}, GICR=0x{:x}",
+            gicd_base, gicr_base
+        );
         gic
     }
 
@@ -324,7 +326,10 @@ impl VcpuHandle {
                     // immediate for patched timer instructions.
                     // Syndrome = 0 here; the caller reads x0 for PSCI dispatch
                     // and uses handle_patched_timer_hvc for timer HVCs.
-                    VcpuExit::Hvc { syndrome: 0, is_smc: false }
+                    VcpuExit::Hvc {
+                        syndrome: 0,
+                        is_smc: false,
+                    }
                 }
                 kvm_ioctls::VcpuExit::SystemEvent(event_type, _flags) => {
                     VcpuExit::SystemEvent { event_type }
@@ -332,24 +337,22 @@ impl VcpuHandle {
                 kvm_ioctls::VcpuExit::Debug(debug_arch) => {
                     // BRK instruction with guest debug enabled.
                     // debug_arch.hsr contains the ESR — for BRK, ISS = imm16.
-                    VcpuExit::Debug { hsr: debug_arch.hsr }
+                    VcpuExit::Debug {
+                        hsr: debug_arch.hsr,
+                    }
                 }
-                kvm_ioctls::VcpuExit::Hlt => {
-                    VcpuExit::Wfi
-                }
+                kvm_ioctls::VcpuExit::Hlt => VcpuExit::Wfi,
                 other => {
                     eprintln!("KVM: unexpected exit: {:?}", other);
                     VcpuExit::Unknown(0)
                 }
             },
-            Err(ref e) => {
-                match e.errno() {
-                    libc::EAGAIN | libc::EINTR => VcpuExit::Canceled,
-                    errno => {
-                        panic!("KVM_RUN failed: {} (errno={})", e, errno);
-                    }
+            Err(ref e) => match e.errno() {
+                libc::EAGAIN | libc::EINTR => VcpuExit::Canceled,
+                errno => {
+                    panic!("KVM_RUN failed: {} (errno={})", e, errno);
                 }
-            }
+            },
         }
     }
 
@@ -375,12 +378,14 @@ impl VcpuHandle {
         // FPCR/FPSR are 32-bit registers
         if reg == REG_FPCR || reg == REG_FPSR {
             let mut bytes = [0u8; 4];
-            self.vcpu.get_one_reg(id, &mut bytes)
+            self.vcpu
+                .get_one_reg(id, &mut bytes)
                 .unwrap_or_else(|e| panic!("KVM get_one_reg(GPR {}) failed: {}", reg, e));
             u32::from_le_bytes(bytes) as u64
         } else {
             let mut bytes = [0u8; 8];
-            self.vcpu.get_one_reg(id, &mut bytes)
+            self.vcpu
+                .get_one_reg(id, &mut bytes)
                 .unwrap_or_else(|e| panic!("KVM get_one_reg(GPR {}) failed: {}", reg, e));
             u64::from_le_bytes(bytes)
         }
@@ -391,11 +396,13 @@ impl VcpuHandle {
         let id = gpr_to_kvm_id(reg);
         if reg == REG_FPCR || reg == REG_FPSR {
             let bytes = (val as u32).to_le_bytes();
-            self.vcpu.set_one_reg(id, &bytes)
+            self.vcpu
+                .set_one_reg(id, &bytes)
                 .unwrap_or_else(|e| panic!("KVM set_one_reg(GPR {}) failed: {}", reg, e));
         } else {
             let bytes = val.to_le_bytes();
-            self.vcpu.set_one_reg(id, &bytes)
+            self.vcpu
+                .set_one_reg(id, &bytes)
                 .unwrap_or_else(|e| panic!("KVM set_one_reg(GPR {}) failed: {}", reg, e));
         }
     }
@@ -441,7 +448,8 @@ impl VcpuHandle {
     pub fn try_set_sys_reg(&self, reg: SysReg, val: u64) -> Result<(), String> {
         let id = sys_reg_to_kvm(reg);
         let bytes = val.to_le_bytes();
-        self.vcpu.set_one_reg(id, &bytes)
+        self.vcpu
+            .set_one_reg(id, &bytes)
             .map(|_| ())
             .map_err(|e| format!("KVM set_one_reg({:?}) failed: {}", reg, e))
     }
@@ -451,7 +459,8 @@ impl VcpuHandle {
         assert!(reg < 32, "SIMD register index out of range");
         let id = kvm_core_reg_id(KVM_REG_SIZE_U128 as u64, simd_offset(reg));
         let mut bytes = [0u8; 16];
-        self.vcpu.get_one_reg(id, &mut bytes)
+        self.vcpu
+            .get_one_reg(id, &mut bytes)
             .unwrap_or_else(|e| panic!("KVM get_one_reg(SIMD Q{}) failed: {}", reg, e));
         SimdReg(bytes)
     }
@@ -460,7 +469,8 @@ impl VcpuHandle {
     pub fn set_simd_reg(&self, reg: u32, val: &SimdReg) {
         assert!(reg < 32, "SIMD register index out of range");
         let id = kvm_core_reg_id(KVM_REG_SIZE_U128 as u64, simd_offset(reg));
-        self.vcpu.set_one_reg(id, &val.0)
+        self.vcpu
+            .set_one_reg(id, &val.0)
             .unwrap_or_else(|e| panic!("KVM set_one_reg(SIMD Q{}) failed: {}", reg, e));
     }
 
@@ -514,7 +524,8 @@ impl VcpuHandle {
             control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP,
             ..Default::default()
         };
-        self.vcpu.set_guest_debug(&debug)
+        self.vcpu
+            .set_guest_debug(&debug)
             .expect("KVM_SET_GUEST_DEBUG failed");
     }
 
@@ -538,14 +549,12 @@ impl GicHandle {
             attr,
             addr,
         };
-        self.device
-            .set_device_attr(&kvm_attr)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "KVM GIC set_device_attr(group={}, attr={}) failed: {}",
-                    group, attr, e
-                )
-            });
+        self.device.set_device_attr(&kvm_attr).unwrap_or_else(|e| {
+            panic!(
+                "KVM GIC set_device_attr(group={}, attr={}) failed: {}",
+                group, attr, e
+            )
+        });
     }
 
     /// Assert/deassert an SPI (Shared Peripheral Interrupt).
@@ -611,7 +620,10 @@ mod tests {
         // SCTLR_EL1: Op0=3, Op1=0, CRn=1, CRm=0, Op2=0
         let id = sys_reg_to_kvm(SysReg::SCTLR_EL1);
         assert_eq!(id & KVM_REG_ARM64 as u64, KVM_REG_ARM64 as u64);
-        assert_eq!(id & KVM_REG_ARM64_SYSREG as u64, KVM_REG_ARM64_SYSREG as u64);
+        assert_eq!(
+            id & KVM_REG_ARM64_SYSREG as u64,
+            KVM_REG_ARM64_SYSREG as u64
+        );
     }
 
     #[test]

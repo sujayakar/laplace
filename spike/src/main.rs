@@ -33,7 +33,7 @@ const HV_EXIT_REASON_UNKNOWN: u32 = 3;
 const HV_REG_X0: u32 = 0;
 const HV_REG_X1: u32 = 1;
 const HV_REG_X2: u32 = 2;
-const HV_REG_PC: u32 = 31;  // After x0-x30
+const HV_REG_PC: u32 = 31; // After x0-x30
 const HV_REG_CPSR: u32 = 34; // After x0-x30, PC, FPCR, FPSR
 
 // System register IDs (from hv_vcpu_types.h)
@@ -64,7 +64,11 @@ extern "C" {
     fn hv_vm_destroy() -> HvReturn;
     fn hv_vm_map(addr: *mut u8, ipa: HvIpa, size: usize, flags: HvMemoryFlags) -> HvReturn;
     fn hv_vm_unmap(ipa: HvIpa, size: usize) -> HvReturn;
-    fn hv_vcpu_create(vcpu: *mut HvVcpu, exit: *mut *const HvVcpuExit, config: HvVcpuConfig) -> HvReturn;
+    fn hv_vcpu_create(
+        vcpu: *mut HvVcpu,
+        exit: *mut *const HvVcpuExit,
+        config: HvVcpuConfig,
+    ) -> HvReturn;
     fn hv_vcpu_destroy(vcpu: HvVcpu) -> HvReturn;
     fn hv_vcpu_run(vcpu: HvVcpu) -> HvReturn;
     fn hv_vcpu_get_reg(vcpu: HvVcpu, reg: u32, value: *mut u64) -> HvReturn;
@@ -84,7 +88,12 @@ fn hv_result_name(ret: HvReturn) -> &'static str {
 
 fn check_hv(ret: HvReturn, context: &str) {
     if ret != HV_SUCCESS {
-        panic!("{}: returned 0x{:x} ({})", context, ret as u32, hv_result_name(ret));
+        panic!(
+            "{}: returned 0x{:x} ({})",
+            context,
+            ret as u32,
+            hv_result_name(ret)
+        );
     }
 }
 
@@ -142,10 +151,7 @@ fn create_vcpu_with_state(
         // Combined: 0x3c5 (but usually written as 0x3c4 for EL1h)
         // Actually: PSTATE M[3:0] = 0b0101 for EL1h = 5, DAIF = 0xf << 6 = 0x3c0
         // 0x3c0 | 0x5 = 0x3c5
-        check_hv(
-            hv_vcpu_set_reg(vcpu, HV_REG_CPSR, 0x3c4),
-            "set CPSR",
-        );
+        check_hv(hv_vcpu_set_reg(vcpu, HV_REG_CPSR, 0x3c4), "set CPSR");
 
         // SCTLR_EL1: MMU off, caches off
         check_hv(
@@ -194,7 +200,12 @@ fn test_basic_hvc_trap() {
     // Map code into guest
     unsafe {
         check_hv(
-            hv_vm_map(code_mem, code_ipa, code_size as usize, HV_MEMORY_READ | HV_MEMORY_EXEC),
+            hv_vm_map(
+                code_mem,
+                code_ipa,
+                code_size as usize,
+                HV_MEMORY_READ | HV_MEMORY_EXEC,
+            ),
             "hv_vm_map code",
         );
     }
@@ -206,7 +217,12 @@ fn test_basic_hvc_trap() {
 
     unsafe {
         check_hv(
-            hv_vm_map(stack_mem, stack_ipa, stack_size as usize, HV_MEMORY_READ | HV_MEMORY_WRITE),
+            hv_vm_map(
+                stack_mem,
+                stack_ipa,
+                stack_size as usize,
+                HV_MEMORY_READ | HV_MEMORY_WRITE,
+            ),
             "hv_vm_map stack",
         );
     }
@@ -218,14 +234,23 @@ fn test_basic_hvc_trap() {
         check_hv(hv_vcpu_run(vcpu), "hv_vcpu_run");
 
         let exit = &*exit_ptr;
-        println!("  Exit reason: {} (expected {}=EXCEPTION)", exit.reason, HV_EXIT_REASON_EXCEPTION);
-        assert_eq!(exit.reason, HV_EXIT_REASON_EXCEPTION, "Expected EXCEPTION exit");
+        println!(
+            "  Exit reason: {} (expected {}=EXCEPTION)",
+            exit.reason, HV_EXIT_REASON_EXCEPTION
+        );
+        assert_eq!(
+            exit.reason, HV_EXIT_REASON_EXCEPTION,
+            "Expected EXCEPTION exit"
+        );
 
         // ESR_EL2 syndrome: EC is bits [31:26]
         let syndrome = exit.exception.syndrome;
         let ec = (syndrome >> 26) & 0x3f;
         println!("  ESR syndrome: 0x{:08x}", syndrome);
-        println!("  Exception Class (EC): 0x{:02x} (expected 0x16=HVC from AArch64)", ec);
+        println!(
+            "  Exception Class (EC): 0x{:02x} (expected 0x16=HVC from AArch64)",
+            ec
+        );
         assert_eq!(ec, 0x16, "Expected EC=0x16 (HVC from AArch64)");
 
         // Check x0 has our hypercall ID
@@ -238,7 +263,11 @@ fn test_basic_hvc_trap() {
         // So we do NOT need to manually advance PC.
         let mut pc: u64 = 0;
         check_hv(hv_vcpu_get_reg(vcpu, HV_REG_PC, &mut pc), "get PC");
-        println!("  PC at exit: 0x{:x} (should be HVC+4 = 0x{:x})", pc, code_ipa + 8);
+        println!(
+            "  PC at exit: 0x{:x} (should be HVC+4 = 0x{:x})",
+            pc,
+            code_ipa + 8
+        );
         assert_eq!(pc, code_ipa + 8, "PC should already point past HVC");
 
         // Set return value in x0
@@ -285,7 +314,8 @@ fn test_cow_fork() {
         let mut buf = vec![0xAA_u8; file_size];
         // Write a known pattern at a specific offset (page 2, offset 0)
         let marker_offset = PAGE_SIZE * 2;
-        buf[marker_offset..marker_offset + 8].copy_from_slice(&0xDEAD_BEEF_CAFE_BABEu64.to_le_bytes());
+        buf[marker_offset..marker_offset + 8]
+            .copy_from_slice(&0xDEAD_BEEF_CAFE_BABEu64.to_le_bytes());
         f.write_all(&buf).expect("write temp file");
     }
 
@@ -318,13 +348,13 @@ fn test_cow_fork() {
     let marker_hi = ((marker_ipa >> 16) & 0xFFFF) as u32;
     // marker_ipa = 0x5000_8000, so bits [32:48] = 0
     let guest_code: [u32; 7] = [
-        0xd2800001 | (marker_lo << 5),   // MOVZ X1, #marker_lo
-        0xf2a00001 | (marker_hi << 5),   // MOVK X1, #marker_hi, LSL #16
-        0xf9400022,                       // LDR X2, [X1]
-        0xd2800003 | (0xBEEF << 5),       // MOVZ X3, #0xBEEF
-        0xf9000023,                       // STR X3, [X1]
-        0xd2800000 | (1 << 5),            // MOVZ X0, #1  (HC_CONSOLE)
-        0xd4000002,                       // HVC #0
+        0xd2800001 | (marker_lo << 5), // MOVZ X1, #marker_lo
+        0xf2a00001 | (marker_hi << 5), // MOVK X1, #marker_hi, LSL #16
+        0xf9400022,                    // LDR X2, [X1]
+        0xd2800003 | (0xBEEF << 5),    // MOVZ X3, #0xBEEF
+        0xf9000023,                    // STR X3, [X1]
+        0xd2800000 | (1 << 5),         // MOVZ X0, #1  (HC_CONSOLE)
+        0xd4000002,                    // HVC #0
     ];
 
     let code_size = PAGE_SIZE;
@@ -369,23 +399,43 @@ fn test_cow_fork() {
         let p = data_mem_1.add(marker_offset) as *const u64;
         *p
     };
-    println!("  Marker value in mmap #1 before guest: 0x{:016x} (expected 0xDEADBEEFCAFEBABE)", marker_val);
+    println!(
+        "  Marker value in mmap #1 before guest: 0x{:016x} (expected 0xDEADBEEFCAFEBABE)",
+        marker_val
+    );
     assert_eq!(marker_val, 0xDEAD_BEEF_CAFE_BABE);
 
     // Create VM 1
-    unsafe { check_hv(hv_vm_create(ptr::null()), "hv_vm_create #1"); }
+    unsafe {
+        check_hv(hv_vm_create(ptr::null()), "hv_vm_create #1");
+    }
 
     unsafe {
         check_hv(
-            hv_vm_map(code_mem, code_ipa, code_size, HV_MEMORY_READ | HV_MEMORY_EXEC),
+            hv_vm_map(
+                code_mem,
+                code_ipa,
+                code_size,
+                HV_MEMORY_READ | HV_MEMORY_EXEC,
+            ),
             "hv_vm_map code #1",
         );
         check_hv(
-            hv_vm_map(stack_mem, stack_ipa, stack_size, HV_MEMORY_READ | HV_MEMORY_WRITE),
+            hv_vm_map(
+                stack_mem,
+                stack_ipa,
+                stack_size,
+                HV_MEMORY_READ | HV_MEMORY_WRITE,
+            ),
             "hv_vm_map stack #1",
         );
         check_hv(
-            hv_vm_map(data_mem_1, data_ipa, file_size, HV_MEMORY_READ | HV_MEMORY_WRITE),
+            hv_vm_map(
+                data_mem_1,
+                data_ipa,
+                file_size,
+                HV_MEMORY_READ | HV_MEMORY_WRITE,
+            ),
             "hv_vm_map data #1",
         );
     }
@@ -395,14 +445,20 @@ fn test_cow_fork() {
     unsafe {
         check_hv(hv_vcpu_run(vcpu1), "hv_vcpu_run VM1");
         let exit = &*exit_ptr1;
-        assert_eq!(exit.reason, HV_EXIT_REASON_EXCEPTION, "VM1: expected EXCEPTION");
+        assert_eq!(
+            exit.reason, HV_EXIT_REASON_EXCEPTION,
+            "VM1: expected EXCEPTION"
+        );
         let ec = (exit.exception.syndrome >> 26) & 0x3f;
         assert_eq!(ec, 0x16, "VM1: expected HVC");
 
         // x2 should have the original marker value
         let mut x2: u64 = 0;
         check_hv(hv_vcpu_get_reg(vcpu1, HV_REG_X2, &mut x2), "get x2 VM1");
-        println!("  VM1 read marker (x2): 0x{:016x} (expected 0xDEADBEEFCAFEBABE)", x2);
+        println!(
+            "  VM1 read marker (x2): 0x{:016x} (expected 0xDEADBEEFCAFEBABE)",
+            x2
+        );
         assert_eq!(x2, 0xDEAD_BEEF_CAFE_BABE);
 
         // Verify the write landed in host mapping (CoW page now)
@@ -430,25 +486,46 @@ fn test_cow_fork() {
     };
 
     // VM2's mapping should NOT see VM1's write
-    let marker_val_2 = unsafe {
-        *(data_mem_2.add(marker_offset) as *const u64)
-    };
-    println!("  VM2 mmap marker (before guest): 0x{:016x} (expected original 0xDEADBEEFCAFEBABE)", marker_val_2);
-    assert_eq!(marker_val_2, 0xDEAD_BEEF_CAFE_BABE, "CoW isolation failed: VM2 sees VM1's write!");
+    let marker_val_2 = unsafe { *(data_mem_2.add(marker_offset) as *const u64) };
+    println!(
+        "  VM2 mmap marker (before guest): 0x{:016x} (expected original 0xDEADBEEFCAFEBABE)",
+        marker_val_2
+    );
+    assert_eq!(
+        marker_val_2, 0xDEAD_BEEF_CAFE_BABE,
+        "CoW isolation failed: VM2 sees VM1's write!"
+    );
 
-    unsafe { check_hv(hv_vm_create(ptr::null()), "hv_vm_create #2"); }
+    unsafe {
+        check_hv(hv_vm_create(ptr::null()), "hv_vm_create #2");
+    }
 
     unsafe {
         check_hv(
-            hv_vm_map(code_mem, code_ipa, code_size, HV_MEMORY_READ | HV_MEMORY_EXEC),
+            hv_vm_map(
+                code_mem,
+                code_ipa,
+                code_size,
+                HV_MEMORY_READ | HV_MEMORY_EXEC,
+            ),
             "hv_vm_map code #2",
         );
         check_hv(
-            hv_vm_map(stack_mem, stack_ipa, stack_size, HV_MEMORY_READ | HV_MEMORY_WRITE),
+            hv_vm_map(
+                stack_mem,
+                stack_ipa,
+                stack_size,
+                HV_MEMORY_READ | HV_MEMORY_WRITE,
+            ),
             "hv_vm_map stack #2",
         );
         check_hv(
-            hv_vm_map(data_mem_2, data_ipa, file_size, HV_MEMORY_READ | HV_MEMORY_WRITE),
+            hv_vm_map(
+                data_mem_2,
+                data_ipa,
+                file_size,
+                HV_MEMORY_READ | HV_MEMORY_WRITE,
+            ),
             "hv_vm_map data #2",
         );
     }
@@ -462,7 +539,10 @@ fn test_cow_fork() {
 
         let mut x2: u64 = 0;
         check_hv(hv_vcpu_get_reg(vcpu2, HV_REG_X2, &mut x2), "get x2 VM2");
-        println!("  VM2 read marker (x2): 0x{:016x} (expected original, NOT 0xBEEF)", x2);
+        println!(
+            "  VM2 read marker (x2): 0x{:016x} (expected original, NOT 0xBEEF)",
+            x2
+        );
         assert_eq!(x2, 0xDEAD_BEEF_CAFE_BABE, "CoW isolation failed in guest!");
 
         check_hv(hv_vcpu_destroy(vcpu2), "hv_vcpu_destroy #2");
@@ -472,10 +552,18 @@ fn test_cow_fork() {
     // ─── Verify original file is unmodified ────
     let file_contents = std::fs::read(&tmp_path).expect("read temp file");
     let file_marker = u64::from_le_bytes(
-        file_contents[marker_offset..marker_offset + 8].try_into().unwrap(),
+        file_contents[marker_offset..marker_offset + 8]
+            .try_into()
+            .unwrap(),
     );
-    println!("  Original file marker: 0x{:016x} (expected 0xDEADBEEFCAFEBABE)", file_marker);
-    assert_eq!(file_marker, 0xDEAD_BEEF_CAFE_BABE, "MAP_PRIVATE leaked writes to file!");
+    println!(
+        "  Original file marker: 0x{:016x} (expected 0xDEADBEEFCAFEBABE)",
+        file_marker
+    );
+    assert_eq!(
+        file_marker, 0xDEAD_BEEF_CAFE_BABE,
+        "MAP_PRIVATE leaked writes to file!"
+    );
 
     // Cleanup
     unsafe {
@@ -507,11 +595,7 @@ fn test_vm_creation_latency() {
     // Write a single HVC #0 instruction
     let hvc_insn: u32 = 0xd4000002;
     unsafe {
-        ptr::copy_nonoverlapping(
-            &hvc_insn as *const u32 as *const u8,
-            code_mem,
-            4,
-        );
+        ptr::copy_nonoverlapping(&hvc_insn as *const u32 as *const u8, code_mem, 4);
     }
 
     let stack_size = PAGE_SIZE;
@@ -521,17 +605,29 @@ fn test_vm_creation_latency() {
     for i in 0..iterations {
         let t_start = Instant::now();
 
-        unsafe { check_hv(hv_vm_create(ptr::null()), &format!("vm_create iter {}", i)); }
+        unsafe {
+            check_hv(hv_vm_create(ptr::null()), &format!("vm_create iter {}", i));
+        }
 
         let t_vm_created = Instant::now();
 
         unsafe {
             check_hv(
-                hv_vm_map(code_mem, code_ipa, code_size, HV_MEMORY_READ | HV_MEMORY_EXEC),
+                hv_vm_map(
+                    code_mem,
+                    code_ipa,
+                    code_size,
+                    HV_MEMORY_READ | HV_MEMORY_EXEC,
+                ),
                 "map code",
             );
             check_hv(
-                hv_vm_map(stack_mem, stack_ipa, stack_size, HV_MEMORY_READ | HV_MEMORY_WRITE),
+                hv_vm_map(
+                    stack_mem,
+                    stack_ipa,
+                    stack_size,
+                    HV_MEMORY_READ | HV_MEMORY_WRITE,
+                ),
                 "map stack",
             );
         }
@@ -571,9 +667,15 @@ fn test_vm_creation_latency() {
 
     let target_us = 500;
     if total_p50.as_micros() > target_us {
-        println!("  ⚠ WARNING: p50 total setup ({:?}) exceeds {}μs target!", total_p50, target_us);
+        println!(
+            "  ⚠ WARNING: p50 total setup ({:?}) exceeds {}μs target!",
+            total_p50, target_us
+        );
     } else {
-        println!("  ✓ p50 total setup ({:?}) is under {}μs target", total_p50, target_us);
+        println!(
+            "  ✓ p50 total setup ({:?}) is under {}μs target",
+            total_p50, target_us
+        );
     }
 
     unsafe {
@@ -599,23 +701,36 @@ fn test_concurrent_vm_limits() {
             println!("  VM create failed at iteration {}: 0x{:x}", i, ret as u32);
             break;
         }
-        unsafe { check_hv(hv_vm_destroy(), &format!("vm_destroy cycle {}", i)); }
+        unsafe {
+            check_hv(hv_vm_destroy(), &format!("vm_destroy cycle {}", i));
+        }
     }
     let elapsed = start.elapsed();
-    println!("  {} VM create/destroy cycles in {:?} ({:.1}μs/cycle)",
-        cycle_count, elapsed, elapsed.as_micros() as f64 / cycle_count as f64);
+    println!(
+        "  {} VM create/destroy cycles in {:?} ({:.1}μs/cycle)",
+        cycle_count,
+        elapsed,
+        elapsed.as_micros() as f64 / cycle_count as f64
+    );
 
     // Test 4b: Confirm only one VM per process
     println!("\n  Testing single-VM-per-process constraint...");
-    unsafe { check_hv(hv_vm_create(ptr::null()), "hv_vm_create main"); }
+    unsafe {
+        check_hv(hv_vm_create(ptr::null()), "hv_vm_create main");
+    }
 
     let ret2 = unsafe { hv_vm_create(ptr::null()) };
-    println!("  Second hv_vm_create returned: 0x{:x} (expected non-zero/HV_BUSY)", ret2 as u32);
+    println!(
+        "  Second hv_vm_create returned: 0x{:x} (expected non-zero/HV_BUSY)",
+        ret2 as u32
+    );
     if ret2 != HV_SUCCESS {
         println!("  ✓ Confirmed: only one VM per process");
     } else {
         println!("  ⚠ Unexpected: second VM creation succeeded!");
-        unsafe { let _ = hv_vm_destroy(); }
+        unsafe {
+            let _ = hv_vm_destroy();
+        }
     }
 
     // Test 4c: Max vCPUs within the single VM (one per thread, using park/unpark)
@@ -637,16 +752,16 @@ fn test_concurrent_vm_limits() {
             let mut vcpu: HvVcpu = 0;
             let mut exit_ptr: *const HvVcpuExit = ptr::null();
 
-            let ret = unsafe {
-                hv_vcpu_create(&mut vcpu, &mut exit_ptr, ptr::null())
-            };
+            let ret = unsafe { hv_vcpu_create(&mut vcpu, &mut exit_ptr, ptr::null()) };
 
             if ret == HV_SUCCESS {
                 mc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 tx.send(true).ok();
                 // Park until main thread unparks us for cleanup
                 std::thread::park();
-                unsafe { let _ = hv_vcpu_destroy(vcpu); }
+                unsafe {
+                    let _ = hv_vcpu_destroy(vcpu);
+                }
             } else {
                 let mut guard = fe.lock().unwrap();
                 if guard.is_none() {
@@ -684,7 +799,9 @@ fn test_concurrent_vm_limits() {
         let _ = h.join();
     }
 
-    unsafe { check_hv(hv_vm_destroy(), "final vm_destroy"); }
+    unsafe {
+        check_hv(hv_vm_destroy(), "final vm_destroy");
+    }
 
     println!("  ✓ Concurrent VM limits test complete\n");
 }

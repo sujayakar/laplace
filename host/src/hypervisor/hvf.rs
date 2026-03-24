@@ -119,15 +119,24 @@ extern "C" {
     pub fn hv_vm_destroy() -> HvReturn;
     pub fn hv_vm_map(addr: *mut u8, ipa: HvIpa, size: usize, flags: HvMemoryFlags) -> HvReturn;
     pub fn hv_vm_unmap(ipa: HvIpa, size: usize) -> HvReturn;
-    pub fn hv_vcpu_create(vcpu: *mut HvVcpu, exit: *mut *const HvVcpuExit, config: HvVcpuConfig) -> HvReturn;
+    pub fn hv_vcpu_create(
+        vcpu: *mut HvVcpu,
+        exit: *mut *const HvVcpuExit,
+        config: HvVcpuConfig,
+    ) -> HvReturn;
     pub fn hv_vcpu_destroy(vcpu: HvVcpu) -> HvReturn;
     pub fn hv_vcpu_run(vcpu: HvVcpu) -> HvReturn;
     pub fn hv_vcpu_get_reg(vcpu: HvVcpu, reg: u32, value: *mut u64) -> HvReturn;
     pub fn hv_vcpu_set_reg(vcpu: HvVcpu, reg: u32, value: u64) -> HvReturn;
     pub fn hv_vcpu_get_sys_reg(vcpu: HvVcpu, reg: u16, value: *mut u64) -> HvReturn;
     pub fn hv_vcpu_set_sys_reg(vcpu: HvVcpu, reg: u16, value: u64) -> HvReturn;
-    pub fn hv_vcpu_get_simd_fp_reg(vcpu: HvVcpu, reg: u32, value: *mut HvSimdFpUchar16) -> HvReturn;
-    pub fn hv_vcpu_set_simd_fp_reg(vcpu: HvVcpu, reg: u32, value: *const HvSimdFpUchar16) -> HvReturn;
+    pub fn hv_vcpu_get_simd_fp_reg(vcpu: HvVcpu, reg: u32, value: *mut HvSimdFpUchar16)
+        -> HvReturn;
+    pub fn hv_vcpu_set_simd_fp_reg(
+        vcpu: HvVcpu,
+        reg: u32,
+        value: *const HvSimdFpUchar16,
+    ) -> HvReturn;
     pub fn hv_vcpu_set_vtimer_mask(vcpu: HvVcpu, vtimer_is_masked: bool) -> HvReturn;
     pub fn hv_vcpu_set_vtimer_offset(vcpu: HvVcpu, vtimer_offset: u64) -> HvReturn;
     pub fn hv_vcpu_get_vtimer_offset(vcpu: HvVcpu, vtimer_offset: *mut u64) -> HvReturn;
@@ -138,11 +147,17 @@ extern "C" {
     pub fn hv_gic_create(gic_config: HvGicConfig) -> HvReturn;
     pub fn hv_gic_reset() -> HvReturn;
     pub fn hv_gic_set_spi(intid: u32, level: bool) -> HvReturn;
-    pub fn hv_gic_get_spi_interrupt_range(spi_intid_base: *mut u32, spi_intid_count: *mut u32) -> HvReturn;
+    pub fn hv_gic_get_spi_interrupt_range(
+        spi_intid_base: *mut u32,
+        spi_intid_count: *mut u32,
+    ) -> HvReturn;
     pub fn hv_vcpus_exit(vcpus: *const HvVcpu, vcpu_count: u32) -> HvReturn;
     pub fn hv_vm_config_create() -> *mut std::ffi::c_void;
     pub fn hv_vm_config_get_el2_supported(el2_supported: *mut bool) -> HvReturn;
-    pub fn hv_vm_config_set_el2_enabled(config: *mut std::ffi::c_void, el2_enabled: bool) -> HvReturn;
+    pub fn hv_vm_config_set_el2_enabled(
+        config: *mut std::ffi::c_void,
+        el2_enabled: bool,
+    ) -> HvReturn;
     pub fn hv_gic_state_create() -> *mut std::ffi::c_void;
     pub fn hv_gic_state_get_size(state: *const std::ffi::c_void, size: *mut usize) -> HvReturn;
     pub fn hv_gic_state_get_data(state: *const std::ffi::c_void, data: *mut u8) -> HvReturn;
@@ -165,7 +180,10 @@ pub unsafe fn vcpu_get_reg(vcpu: HvVcpu, reg: u32) -> u64 {
 
 pub unsafe fn vcpu_get_sys_reg(vcpu: HvVcpu, reg: u16) -> u64 {
     let mut value: u64 = 0;
-    check_hv(hv_vcpu_get_sys_reg(vcpu, reg, &mut value), "hv_vcpu_get_sys_reg");
+    check_hv(
+        hv_vcpu_get_sys_reg(vcpu, reg, &mut value),
+        "hv_vcpu_get_sys_reg",
+    );
     value
 }
 
@@ -173,58 +191,58 @@ pub unsafe fn vcpu_get_sys_reg(vcpu: HvVcpu, reg: u16) -> u64 {
 
 fn sys_reg_to_hvf(reg: SysReg) -> u16 {
     match reg {
-        SysReg::MDSCR_EL1       => HV_SYS_REG_MDSCR_EL1,
-        SysReg::MPIDR_EL1       => HV_SYS_REG_MPIDR_EL1,
-        SysReg::SCTLR_EL1       => HV_SYS_REG_SCTLR_EL1,
-        SysReg::CPACR_EL1       => HV_SYS_REG_CPACR_EL1,
-        SysReg::TTBR0_EL1       => HV_SYS_REG_TTBR0_EL1,
-        SysReg::TTBR1_EL1       => HV_SYS_REG_TTBR1_EL1,
-        SysReg::TCR_EL1         => HV_SYS_REG_TCR_EL1,
-        SysReg::SPSR_EL1        => HV_SYS_REG_SPSR_EL1,
-        SysReg::ELR_EL1         => HV_SYS_REG_ELR_EL1,
-        SysReg::SP_EL0          => HV_SYS_REG_SP_EL0,
-        SysReg::AFSR0_EL1       => HV_SYS_REG_AFSR0_EL1,
-        SysReg::AFSR1_EL1       => HV_SYS_REG_AFSR1_EL1,
-        SysReg::ESR_EL1         => HV_SYS_REG_ESR_EL1,
-        SysReg::FAR_EL1         => HV_SYS_REG_FAR_EL1,
-        SysReg::PAR_EL1         => HV_SYS_REG_PAR_EL1,
-        SysReg::MAIR_EL1        => HV_SYS_REG_MAIR_EL1,
-        SysReg::AMAIR_EL1       => HV_SYS_REG_AMAIR_EL1,
-        SysReg::VBAR_EL1        => HV_SYS_REG_VBAR_EL1,
-        SysReg::CONTEXTIDR_EL1  => HV_SYS_REG_CONTEXTIDR_EL1,
-        SysReg::TPIDR_EL1       => HV_SYS_REG_TPIDR_EL1,
-        SysReg::CNTKCTL_EL1     => HV_SYS_REG_CNTKCTL_EL1,
-        SysReg::CSSELR_EL1      => HV_SYS_REG_CSSELR_EL1,
-        SysReg::TPIDR_EL0       => HV_SYS_REG_TPIDR_EL0,
-        SysReg::TPIDRRO_EL0     => HV_SYS_REG_TPIDRRO_EL0,
-        SysReg::CNTV_CTL_EL0    => HV_SYS_REG_CNTV_CTL_EL0,
-        SysReg::CNTV_CVAL_EL0   => HV_SYS_REG_CNTV_CVAL_EL0,
-        SysReg::CNTP_CTL_EL0    => HV_SYS_REG_CNTP_CTL_EL0,
-        SysReg::CNTP_CVAL_EL0   => HV_SYS_REG_CNTP_CVAL_EL0,
-        SysReg::CNTHCTL_EL2     => HV_SYS_REG_CNTHCTL_EL2,
-        SysReg::SP_EL1          => HV_SYS_REG_SP_EL1,
-        SysReg::APIAKEYLO_EL1   => HV_SYS_REG_APIAKEYLO_EL1,
-        SysReg::APIAKEYHI_EL1   => HV_SYS_REG_APIAKEYHI_EL1,
-        SysReg::APIBKEYLO_EL1   => HV_SYS_REG_APIBKEYLO_EL1,
-        SysReg::APIBKEYHI_EL1   => HV_SYS_REG_APIBKEYHI_EL1,
-        SysReg::APDAKEYLO_EL1   => HV_SYS_REG_APDAKEYLO_EL1,
-        SysReg::APDAKEYHI_EL1   => HV_SYS_REG_APDAKEYHI_EL1,
-        SysReg::APDBKEYLO_EL1   => HV_SYS_REG_APDBKEYLO_EL1,
-        SysReg::APDBKEYHI_EL1   => HV_SYS_REG_APDBKEYHI_EL1,
-        SysReg::APGAKEYLO_EL1   => HV_SYS_REG_APGAKEYLO_EL1,
-        SysReg::APGAKEYHI_EL1   => HV_SYS_REG_APGAKEYHI_EL1,
+        SysReg::MDSCR_EL1 => HV_SYS_REG_MDSCR_EL1,
+        SysReg::MPIDR_EL1 => HV_SYS_REG_MPIDR_EL1,
+        SysReg::SCTLR_EL1 => HV_SYS_REG_SCTLR_EL1,
+        SysReg::CPACR_EL1 => HV_SYS_REG_CPACR_EL1,
+        SysReg::TTBR0_EL1 => HV_SYS_REG_TTBR0_EL1,
+        SysReg::TTBR1_EL1 => HV_SYS_REG_TTBR1_EL1,
+        SysReg::TCR_EL1 => HV_SYS_REG_TCR_EL1,
+        SysReg::SPSR_EL1 => HV_SYS_REG_SPSR_EL1,
+        SysReg::ELR_EL1 => HV_SYS_REG_ELR_EL1,
+        SysReg::SP_EL0 => HV_SYS_REG_SP_EL0,
+        SysReg::AFSR0_EL1 => HV_SYS_REG_AFSR0_EL1,
+        SysReg::AFSR1_EL1 => HV_SYS_REG_AFSR1_EL1,
+        SysReg::ESR_EL1 => HV_SYS_REG_ESR_EL1,
+        SysReg::FAR_EL1 => HV_SYS_REG_FAR_EL1,
+        SysReg::PAR_EL1 => HV_SYS_REG_PAR_EL1,
+        SysReg::MAIR_EL1 => HV_SYS_REG_MAIR_EL1,
+        SysReg::AMAIR_EL1 => HV_SYS_REG_AMAIR_EL1,
+        SysReg::VBAR_EL1 => HV_SYS_REG_VBAR_EL1,
+        SysReg::CONTEXTIDR_EL1 => HV_SYS_REG_CONTEXTIDR_EL1,
+        SysReg::TPIDR_EL1 => HV_SYS_REG_TPIDR_EL1,
+        SysReg::CNTKCTL_EL1 => HV_SYS_REG_CNTKCTL_EL1,
+        SysReg::CSSELR_EL1 => HV_SYS_REG_CSSELR_EL1,
+        SysReg::TPIDR_EL0 => HV_SYS_REG_TPIDR_EL0,
+        SysReg::TPIDRRO_EL0 => HV_SYS_REG_TPIDRRO_EL0,
+        SysReg::CNTV_CTL_EL0 => HV_SYS_REG_CNTV_CTL_EL0,
+        SysReg::CNTV_CVAL_EL0 => HV_SYS_REG_CNTV_CVAL_EL0,
+        SysReg::CNTP_CTL_EL0 => HV_SYS_REG_CNTP_CTL_EL0,
+        SysReg::CNTP_CVAL_EL0 => HV_SYS_REG_CNTP_CVAL_EL0,
+        SysReg::CNTHCTL_EL2 => HV_SYS_REG_CNTHCTL_EL2,
+        SysReg::SP_EL1 => HV_SYS_REG_SP_EL1,
+        SysReg::APIAKEYLO_EL1 => HV_SYS_REG_APIAKEYLO_EL1,
+        SysReg::APIAKEYHI_EL1 => HV_SYS_REG_APIAKEYHI_EL1,
+        SysReg::APIBKEYLO_EL1 => HV_SYS_REG_APIBKEYLO_EL1,
+        SysReg::APIBKEYHI_EL1 => HV_SYS_REG_APIBKEYHI_EL1,
+        SysReg::APDAKEYLO_EL1 => HV_SYS_REG_APDAKEYLO_EL1,
+        SysReg::APDAKEYHI_EL1 => HV_SYS_REG_APDAKEYHI_EL1,
+        SysReg::APDBKEYLO_EL1 => HV_SYS_REG_APDBKEYLO_EL1,
+        SysReg::APDBKEYHI_EL1 => HV_SYS_REG_APDBKEYHI_EL1,
+        SysReg::APGAKEYLO_EL1 => HV_SYS_REG_APGAKEYLO_EL1,
+        SysReg::APGAKEYHI_EL1 => HV_SYS_REG_APGAKEYHI_EL1,
     }
 }
 
 fn icc_reg_to_hvf(reg: IccReg) -> u16 {
     match reg {
-        IccReg::PMR_EL1     => HV_GIC_ICC_REG_PMR_EL1,
-        IccReg::BPR0_EL1    => HV_GIC_ICC_REG_BPR0_EL1,
-        IccReg::AP0R0_EL1   => HV_GIC_ICC_REG_AP0R0_EL1,
-        IccReg::AP1R0_EL1   => HV_GIC_ICC_REG_AP1R0_EL1,
-        IccReg::BPR1_EL1    => HV_GIC_ICC_REG_BPR1_EL1,
-        IccReg::CTLR_EL1    => HV_GIC_ICC_REG_CTLR_EL1,
-        IccReg::SRE_EL1     => HV_GIC_ICC_REG_SRE_EL1,
+        IccReg::PMR_EL1 => HV_GIC_ICC_REG_PMR_EL1,
+        IccReg::BPR0_EL1 => HV_GIC_ICC_REG_BPR0_EL1,
+        IccReg::AP0R0_EL1 => HV_GIC_ICC_REG_AP0R0_EL1,
+        IccReg::AP1R0_EL1 => HV_GIC_ICC_REG_AP1R0_EL1,
+        IccReg::BPR1_EL1 => HV_GIC_ICC_REG_BPR1_EL1,
+        IccReg::CTLR_EL1 => HV_GIC_ICC_REG_CTLR_EL1,
+        IccReg::SRE_EL1 => HV_GIC_ICC_REG_SRE_EL1,
         IccReg::IGRPEN0_EL1 => HV_GIC_ICC_REG_IGRPEN0_EL1,
         IccReg::IGRPEN1_EL1 => HV_GIC_ICC_REG_IGRPEN1_EL1,
     }
@@ -268,7 +286,10 @@ impl VmHandle {
     pub fn create() -> Self {
         unsafe {
             let mut el2_supported = false;
-            check_hv(hv_vm_config_get_el2_supported(&mut el2_supported), "el2_supported");
+            check_hv(
+                hv_vm_config_get_el2_supported(&mut el2_supported),
+                "el2_supported",
+            );
 
             if el2_supported {
                 let config = hv_vm_config_create();
@@ -286,7 +307,9 @@ impl VmHandle {
 
     pub fn map_memory(&mut self, host_ptr: *mut u8, guest_addr: u64, size: usize, exec: bool) {
         let mut flags = HV_MEMORY_READ | HV_MEMORY_WRITE;
-        if exec { flags |= HV_MEMORY_EXEC; }
+        if exec {
+            flags |= HV_MEMORY_EXEC;
+        }
         unsafe {
             check_hv(hv_vm_map(host_ptr, guest_addr, size, flags), "hv_vm_map");
         }
@@ -296,7 +319,10 @@ impl VmHandle {
         let mut vcpu: HvVcpu = 0;
         let mut exit_ptr: *const HvVcpuExit = ptr::null();
         unsafe {
-            check_hv(hv_vcpu_create(&mut vcpu, &mut exit_ptr, ptr::null()), "hv_vcpu_create");
+            check_hv(
+                hv_vcpu_create(&mut vcpu, &mut exit_ptr, ptr::null()),
+                "hv_vcpu_create",
+            );
         }
         VcpuHandle {
             vcpu,
@@ -311,14 +337,27 @@ impl VmHandle {
         unsafe {
             let gic_config = hv_gic_config_create();
             assert!(!gic_config.is_null());
-            check_hv(hv_gic_config_set_distributor_base(gic_config, gicd_base), "set dist base");
-            check_hv(hv_gic_config_set_redistributor_base(gic_config, gicr_base), "set redist base");
+            check_hv(
+                hv_gic_config_set_distributor_base(gic_config, gicd_base),
+                "set dist base",
+            );
+            check_hv(
+                hv_gic_config_set_redistributor_base(gic_config, gicr_base),
+                "set redist base",
+            );
             check_hv(hv_gic_create(gic_config), "hv_gic_create");
 
             let mut spi_base: u32 = 0;
             let mut spi_count: u32 = 0;
-            check_hv(hv_gic_get_spi_interrupt_range(&mut spi_base, &mut spi_count), "get SPI range");
-            eprintln!("GIC created: SPI range {}..{}", spi_base, spi_base + spi_count);
+            check_hv(
+                hv_gic_get_spi_interrupt_range(&mut spi_base, &mut spi_count),
+                "get SPI range",
+            );
+            eprintln!(
+                "GIC created: SPI range {}..{}",
+                spi_base,
+                spi_base + spi_count
+            );
         }
         GicHandle { _private: () }
     }
@@ -326,7 +365,9 @@ impl VmHandle {
 
 impl Drop for VmHandle {
     fn drop(&mut self) {
-        unsafe { let _ = hv_vm_destroy(); }
+        unsafe {
+            let _ = hv_vm_destroy();
+        }
     }
 }
 
@@ -343,7 +384,9 @@ pub struct VcpuHandle {
 
 impl VcpuHandle {
     pub fn run(&mut self) -> VcpuExit {
-        unsafe { check_hv(hv_vcpu_run(self.vcpu), "hv_vcpu_run"); }
+        unsafe {
+            check_hv(hv_vcpu_run(self.vcpu), "hv_vcpu_run");
+        }
 
         let exit = unsafe { &*self.exit_ptr };
         match exit.reason {
@@ -354,15 +397,18 @@ impl VcpuHandle {
 
                 match ec {
                     // HVC (0x16) or SMC (0x17)
-                    0x16 | 0x17 => {
-                        VcpuExit::Hvc { syndrome, is_smc: ec == 0x17 }
-                    }
+                    0x16 | 0x17 => VcpuExit::Hvc {
+                        syndrome,
+                        is_smc: ec == 0x17,
+                    },
                     // Data abort from lower EL (MMIO)
                     0x24 => {
                         if let Some(mut access) = decode_data_abort(syndrome, ipa) {
                             // For writes, read the value from the guest register
                             if access.is_write {
-                                access.data = if access.reg == 31 { 0 } else {
+                                access.data = if access.reg == 31 {
+                                    0
+                                } else {
                                     unsafe { vcpu_get_reg(self.vcpu, access.reg) }
                                 };
                             } else {
@@ -374,7 +420,10 @@ impl VcpuHandle {
                             // Advance PC past the faulting instruction
                             unsafe {
                                 let pc = vcpu_get_reg(self.vcpu, HV_REG_PC);
-                                check_hv(hv_vcpu_set_reg(self.vcpu, HV_REG_PC, pc + 4), "advance PC");
+                                check_hv(
+                                    hv_vcpu_set_reg(self.vcpu, HV_REG_PC, pc + 4),
+                                    "advance PC",
+                                );
                             }
                             VcpuExit::Mmio(access)
                         } else {
@@ -396,7 +445,9 @@ impl VcpuHandle {
 
     /// Complete an MMIO read by writing the value to the guest register.
     pub fn complete_mmio_read(&mut self, data: &[u8]) {
-        if self.last_mmio_reg == 31 { return; } // XZR — discard
+        if self.last_mmio_reg == 31 {
+            return;
+        } // XZR — discard
         let mut value: u64 = 0;
         for (i, &b) in data.iter().enumerate() {
             value |= (b as u64) << (i * 8);
@@ -410,7 +461,10 @@ impl VcpuHandle {
             };
         }
         unsafe {
-            check_hv(hv_vcpu_set_reg(self.vcpu, self.last_mmio_reg, value), "mmio read writeback");
+            check_hv(
+                hv_vcpu_set_reg(self.vcpu, self.last_mmio_reg, value),
+                "mmio read writeback",
+            );
         }
     }
 
@@ -419,7 +473,9 @@ impl VcpuHandle {
     }
 
     pub fn set_reg(&self, reg: u32, val: u64) {
-        unsafe { check_hv(hv_vcpu_set_reg(self.vcpu, reg, val), "set_reg"); }
+        unsafe {
+            check_hv(hv_vcpu_set_reg(self.vcpu, reg, val), "set_reg");
+        }
     }
 
     pub fn get_sys_reg(&self, reg: SysReg) -> u64 {
@@ -427,30 +483,53 @@ impl VcpuHandle {
     }
 
     pub fn set_sys_reg(&self, reg: SysReg, val: u64) {
-        unsafe { check_hv(hv_vcpu_set_sys_reg(self.vcpu, sys_reg_to_hvf(reg), val), "set_sys_reg"); }
+        unsafe {
+            check_hv(
+                hv_vcpu_set_sys_reg(self.vcpu, sys_reg_to_hvf(reg), val),
+                "set_sys_reg",
+            );
+        }
     }
 
     pub fn try_set_sys_reg(&self, reg: SysReg, val: u64) -> Result<(), String> {
         let ret = unsafe { hv_vcpu_set_sys_reg(self.vcpu, sys_reg_to_hvf(reg), val) };
-        if ret == HV_SUCCESS { Ok(()) } else {
-            Err(format!("HVF set_sys_reg({:?}) returned 0x{:x}", reg, ret as u32))
+        if ret == HV_SUCCESS {
+            Ok(())
+        } else {
+            Err(format!(
+                "HVF set_sys_reg({:?}) returned 0x{:x}",
+                reg, ret as u32
+            ))
         }
     }
 
     pub fn get_simd_reg(&self, reg: u32) -> SimdReg {
         let mut hvf_val = HvSimdFpUchar16::default();
-        unsafe { check_hv(hv_vcpu_get_simd_fp_reg(self.vcpu, reg, &mut hvf_val), "get_simd"); }
+        unsafe {
+            check_hv(
+                hv_vcpu_get_simd_fp_reg(self.vcpu, reg, &mut hvf_val),
+                "get_simd",
+            );
+        }
         SimdReg(hvf_val.0)
     }
 
     pub fn set_simd_reg(&self, reg: u32, val: &SimdReg) {
         let hvf_val = HvSimdFpUchar16(val.0);
-        unsafe { check_hv(hv_vcpu_set_simd_fp_reg(self.vcpu, reg, &hvf_val), "set_simd"); }
+        unsafe {
+            check_hv(
+                hv_vcpu_set_simd_fp_reg(self.vcpu, reg, &hvf_val),
+                "set_simd",
+            );
+        }
     }
 
     pub fn set_pending_interrupt(&self, pending: bool) {
         unsafe {
-            check_hv(hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_IRQ, pending), "set_pending");
+            check_hv(
+                hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_IRQ, pending),
+                "set_pending",
+            );
         }
     }
 
@@ -466,16 +545,28 @@ impl VcpuHandle {
     }
 
     pub fn set_vtimer_mask(&self, masked: bool) {
-        unsafe { check_hv(hv_vcpu_set_vtimer_mask(self.vcpu, masked), "vtimer_mask"); }
+        unsafe {
+            check_hv(hv_vcpu_set_vtimer_mask(self.vcpu, masked), "vtimer_mask");
+        }
     }
 
     pub fn set_vtimer_offset(&self, offset: u64) {
-        unsafe { check_hv(hv_vcpu_set_vtimer_offset(self.vcpu, offset), "vtimer_offset"); }
+        unsafe {
+            check_hv(
+                hv_vcpu_set_vtimer_offset(self.vcpu, offset),
+                "vtimer_offset",
+            );
+        }
     }
 
     pub fn get_vtimer_offset(&self) -> u64 {
         let mut offset: u64 = 0;
-        unsafe { check_hv(hv_vcpu_get_vtimer_offset(self.vcpu, &mut offset), "get_vtimer_offset"); }
+        unsafe {
+            check_hv(
+                hv_vcpu_get_vtimer_offset(self.vcpu, &mut offset),
+                "get_vtimer_offset",
+            );
+        }
         offset
     }
 
@@ -484,15 +575,21 @@ impl VcpuHandle {
     /// HVF uses HVC patching which doesn't need guest debug).
     pub fn enable_guest_debug(&self) {}
 
-    pub fn raw_vcpu(&self) -> HvVcpu { self.vcpu }
+    pub fn raw_vcpu(&self) -> HvVcpu {
+        self.vcpu
+    }
 
     /// Get the raw exit pointer (for Phase 1 code).
-    pub fn raw_exit_ptr(&self) -> *const HvVcpuExit { self.exit_ptr }
+    pub fn raw_exit_ptr(&self) -> *const HvVcpuExit {
+        self.exit_ptr
+    }
 }
 
 impl Drop for VcpuHandle {
     fn drop(&mut self) {
-        unsafe { let _ = hv_vcpu_destroy(self.vcpu); }
+        unsafe {
+            let _ = hv_vcpu_destroy(self.vcpu);
+        }
     }
 }
 
@@ -504,7 +601,9 @@ pub struct GicHandle {
 
 impl GicHandle {
     pub fn set_spi(&self, intid: u32, level: bool) {
-        unsafe { check_hv(hv_gic_set_spi(intid, level), "gic_set_spi"); }
+        unsafe {
+            check_hv(hv_gic_set_spi(intid, level), "gic_set_spi");
+        }
     }
 
     pub fn save_state(&self) -> Vec<u8> {
@@ -514,7 +613,10 @@ impl GicHandle {
             let mut size: usize = 0;
             check_hv(hv_gic_state_get_size(state, &mut size), "gic_state_size");
             let mut data = vec![0u8; size];
-            check_hv(hv_gic_state_get_data(state, data.as_mut_ptr()), "gic_state_data");
+            check_hv(
+                hv_gic_state_get_data(state, data.as_mut_ptr()),
+                "gic_state_data",
+            );
             data
         }
     }
@@ -527,12 +629,22 @@ impl GicHandle {
 
     pub fn get_icc_reg(&self, vcpu: &VcpuHandle, reg: IccReg) -> u64 {
         let mut val: u64 = 0;
-        unsafe { check_hv(hv_gic_get_icc_reg(vcpu.vcpu, icc_reg_to_hvf(reg), &mut val), "get_icc"); }
+        unsafe {
+            check_hv(
+                hv_gic_get_icc_reg(vcpu.vcpu, icc_reg_to_hvf(reg), &mut val),
+                "get_icc",
+            );
+        }
         val
     }
 
     pub fn set_icc_reg(&self, vcpu: &VcpuHandle, reg: IccReg, val: u64) {
-        unsafe { check_hv(hv_gic_set_icc_reg(vcpu.vcpu, icc_reg_to_hvf(reg), val), "set_icc"); }
+        unsafe {
+            check_hv(
+                hv_gic_set_icc_reg(vcpu.vcpu, icc_reg_to_hvf(reg), val),
+                "set_icc",
+            );
+        }
     }
 }
 

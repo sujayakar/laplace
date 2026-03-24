@@ -43,8 +43,8 @@ impl Pl011 {
     pub fn read(&self, offset: u64, _size: usize) -> u64 {
         match offset {
             UARTFR => (FR_TXFE | FR_RXFE) as u64, // TX empty, RX empty
-            UARTMIS => 0,                          // no pending interrupts
-            UARTCR => 0x0301,                      // UART enabled, TX enabled, RX enabled
+            UARTMIS => 0,                         // no pending interrupts
+            UARTCR => 0x0301,                     // UART enabled, TX enabled, RX enabled
             // PL011 identification registers (PeriphID and CellID)
             // These must return the correct values for the Linux PL011 driver
             // to recognize the device (checked by amba_bus match).

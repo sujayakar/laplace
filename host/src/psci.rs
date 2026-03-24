@@ -134,10 +134,17 @@ pub fn handle_psci(func_id: u32, arg1: u64) -> Option<PsciResult> {
             let queried = arg1 as u32;
             let supported = matches!(
                 queried,
-                PSCI_VERSION | PSCI_CPU_ON_32 | PSCI_CPU_ON_64 | PSCI_CPU_OFF
-                    | PSCI_CPU_SUSPEND_32 | PSCI_AFFINITY_INFO_64
-                    | PSCI_MIGRATE_INFO_TYPE | PSCI_SYSTEM_OFF | PSCI_SYSTEM_RESET
-                    | PSCI_FEATURES | SMCCC_VERSION
+                PSCI_VERSION
+                    | PSCI_CPU_ON_32
+                    | PSCI_CPU_ON_64
+                    | PSCI_CPU_OFF
+                    | PSCI_CPU_SUSPEND_32
+                    | PSCI_AFFINITY_INFO_64
+                    | PSCI_MIGRATE_INFO_TYPE
+                    | PSCI_SYSTEM_OFF
+                    | PSCI_SYSTEM_RESET
+                    | PSCI_FEATURES
+                    | SMCCC_VERSION
             );
             if supported {
                 Some(PsciResult::Return(PSCI_SUCCESS as u64))
@@ -151,16 +158,24 @@ pub fn handle_psci(func_id: u32, arg1: u64) -> Option<PsciResult> {
         PSCI_SYSTEM_RESET => Some(PsciResult::SystemReset),
 
         // PSCI_FEATURES query for functions we don't implement
-        PSCI_SMCCC_FILTER | PSCI_SYSTEM_RESET2_32 | PSCI_SYSTEM_RESET2_64 |
-        PSCI_MEM_PROTECT | PSCI_MEM_PROTECT_CHECK_RANGE_32 |
-        PSCI_MEM_PROTECT_CHECK_RANGE_64 | PSCI_STAT_RESIDENCY_32 |
-        PSCI_STAT_RESIDENCY_64 | PSCI_STAT_COUNT_32 | PSCI_STAT_COUNT_64 |
-        PSCI_SET_SUSPEND_MODE | PSCI_SYSTEM_SUSPEND_32 | PSCI_SYSTEM_SUSPEND_64 |
-        PSCI_NODE_HW_STATE_32 | PSCI_NODE_HW_STATE_64 |
-        PSCI_CPU_DEFAULT_SUSPEND_32 | PSCI_CPU_DEFAULT_SUSPEND_64 |
-        PSCI_CPU_FREEZE => {
-            Some(PsciResult::Return(PSCI_NOT_SUPPORTED as u64))
-        }
+        PSCI_SMCCC_FILTER
+        | PSCI_SYSTEM_RESET2_32
+        | PSCI_SYSTEM_RESET2_64
+        | PSCI_MEM_PROTECT
+        | PSCI_MEM_PROTECT_CHECK_RANGE_32
+        | PSCI_MEM_PROTECT_CHECK_RANGE_64
+        | PSCI_STAT_RESIDENCY_32
+        | PSCI_STAT_RESIDENCY_64
+        | PSCI_STAT_COUNT_32
+        | PSCI_STAT_COUNT_64
+        | PSCI_SET_SUSPEND_MODE
+        | PSCI_SYSTEM_SUSPEND_32
+        | PSCI_SYSTEM_SUSPEND_64
+        | PSCI_NODE_HW_STATE_32
+        | PSCI_NODE_HW_STATE_64
+        | PSCI_CPU_DEFAULT_SUSPEND_32
+        | PSCI_CPU_DEFAULT_SUSPEND_64
+        | PSCI_CPU_FREEZE => Some(PsciResult::Return(PSCI_NOT_SUPPORTED as u64)),
 
         // FF-A (Firmware Framework for Arm)
         FFA_VERSION => {
@@ -196,12 +211,18 @@ mod tests {
 
     #[test]
     fn system_off() {
-        assert!(matches!(handle_psci(PSCI_SYSTEM_OFF, 0), Some(PsciResult::SystemOff)));
+        assert!(matches!(
+            handle_psci(PSCI_SYSTEM_OFF, 0),
+            Some(PsciResult::SystemOff)
+        ));
     }
 
     #[test]
     fn system_reset() {
-        assert!(matches!(handle_psci(PSCI_SYSTEM_RESET, 0), Some(PsciResult::SystemReset)));
+        assert!(matches!(
+            handle_psci(PSCI_SYSTEM_RESET, 0),
+            Some(PsciResult::SystemReset)
+        ));
     }
 
     #[test]

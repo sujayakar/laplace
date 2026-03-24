@@ -143,7 +143,7 @@ mod tests {
         let mut vt = VirtualTimer::new();
         vt.write_ctl(1); // enable, unmask
         vt.write_cval(10); // deadline at 10
-        // Advance counter past deadline
+                           // Advance counter past deadline
         for _ in 0..10 {
             vt.read_counter();
         }

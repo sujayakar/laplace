@@ -32,7 +32,11 @@ impl CpuState {
             simd[i] = vcpu.get_simd_reg(i as u32);
         }
 
-        CpuState { gpr, sys_regs, simd }
+        CpuState {
+            gpr,
+            sys_regs,
+            simd,
+        }
     }
 
     /// Restore all CPU state to a vCPU.
@@ -92,7 +96,11 @@ impl CpuState {
             off += 16;
         }
 
-        CpuState { gpr, sys_regs, simd }
+        CpuState {
+            gpr,
+            sys_regs,
+            simd,
+        }
     }
 }
 
@@ -108,8 +116,19 @@ pub struct Template {
 }
 
 impl Template {
-    pub fn new(cpu_state: CpuState, mem_path: std::path::PathBuf, mem_size: usize, guest_base: u64) -> Self {
-        Template { cpu_state, mem_path, mem_size, guest_base, memfd: std::cell::Cell::new(-1) }
+    pub fn new(
+        cpu_state: CpuState,
+        mem_path: std::path::PathBuf,
+        mem_size: usize,
+        guest_base: u64,
+    ) -> Self {
+        Template {
+            cpu_state,
+            mem_path,
+            mem_size,
+            guest_base,
+            memfd: std::cell::Cell::new(-1),
+        }
     }
 
     pub fn save(&self, dir: &Path) {
@@ -117,12 +136,12 @@ impl Template {
 
         let state_path = dir.join("cpu.state");
         let mut f = std::fs::File::create(&state_path).expect("create cpu.state");
-        f.write_all(&self.cpu_state.to_bytes()).expect("write cpu.state");
+        f.write_all(&self.cpu_state.to_bytes())
+            .expect("write cpu.state");
 
         let meta = format!(
             "mem_size={}\nguest_base=0x{:x}\n",
-            self.mem_size,
-            self.guest_base,
+            self.mem_size, self.guest_base,
         );
         std::fs::write(dir.join("meta.txt"), meta).expect("write meta");
     }
@@ -162,7 +181,11 @@ impl Template {
 
         let name = std::ffi::CString::new("laplace-snapshot").unwrap();
         let memfd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
-        assert!(memfd >= 0, "memfd_create failed: {}", std::io::Error::last_os_error());
+        assert!(
+            memfd >= 0,
+            "memfd_create failed: {}",
+            std::io::Error::last_os_error()
+        );
 
         let ret = unsafe { libc::ftruncate(memfd, self.mem_size as i64) };
         assert_eq!(ret, 0, "ftruncate memfd failed");
@@ -226,7 +249,9 @@ impl Template {
                     0,
                 )
             };
-            unsafe { libc::close(fd); }
+            unsafe {
+                libc::close(fd);
+            }
             assert_ne!(ptr, libc::MAP_FAILED, "mmap MAP_PRIVATE failed");
             return ptr as *mut u8;
         }
@@ -237,7 +262,9 @@ impl Drop for Template {
     fn drop(&mut self) {
         let fd = self.memfd.get();
         if fd >= 0 {
-            unsafe { libc::close(fd); }
+            unsafe {
+                libc::close(fd);
+            }
         }
     }
 }

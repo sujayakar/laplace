@@ -123,7 +123,12 @@ enum TimerPatchMode {
 }
 
 /// Patch all timer register accesses in the loaded kernel image.
-fn patch_timer_reads(mem: *mut u8, kernel_offset: usize, kernel_file_size: usize, mode: &TimerPatchMode) -> usize {
+fn patch_timer_reads(
+    mem: *mut u8,
+    kernel_offset: usize,
+    kernel_file_size: usize,
+    mode: &TimerPatchMode,
+) -> usize {
     let mut patched = 0;
     let kernel_start = unsafe { mem.add(kernel_offset) };
 
@@ -180,7 +185,9 @@ fn patch_timer_reads(mem: *mut u8, kernel_offset: usize, kernel_file_size: usize
             _ => continue,
         };
 
-        unsafe { write_insn(kernel_start as *mut u8, i, replacement); }
+        unsafe {
+            write_insn(kernel_start as *mut u8, i, replacement);
+        }
         patched += 1;
     }
     patched
@@ -193,11 +200,7 @@ fn patch_timer_reads(mem: *mut u8, kernel_offset: usize, kernel_file_size: usize
 /// The HSR (exception syndrome register) contains the BRK immediate in bits 15:0.
 /// The immediate encodes the operation type + register, same scheme as HVC.
 /// Returns true if this was a patched timer BRK.
-fn handle_patched_timer_brk(
-    vcpu: &VcpuHandle,
-    hsr: u32,
-    vtimer: &mut VirtualTimer,
-) -> bool {
+fn handle_patched_timer_brk(vcpu: &VcpuHandle, hsr: u32, vtimer: &mut VirtualTimer) -> bool {
     // ESR for BRK: EC=0x3C (bits 31:26), ISS = imm16 (bits 15:0)
     let imm = (hsr & 0xFFFF) as u16;
     if imm < BRK_COUNTER_READ {
@@ -215,16 +218,28 @@ fn handle_patched_timer_brk(
                 vcpu.set_pending_interrupt(true);
             }
         }
-        0xE140 => { vcpu.set_reg(rt, crate::vtimer::COUNTER_FREQ_HZ); }
-        0xE180 => { vcpu.set_reg(rt, vtimer.read_ctl()); }
-        0xE1C0 => { vtimer.write_ctl(vcpu.get_reg(rt)); }
-        0xE200 => { vcpu.set_reg(rt, vtimer.read_cval()); }
-        0xE240 => { vtimer.write_cval(vcpu.get_reg(rt)); }
+        0xE140 => {
+            vcpu.set_reg(rt, crate::vtimer::COUNTER_FREQ_HZ);
+        }
+        0xE180 => {
+            vcpu.set_reg(rt, vtimer.read_ctl());
+        }
+        0xE1C0 => {
+            vtimer.write_ctl(vcpu.get_reg(rt));
+        }
+        0xE200 => {
+            vcpu.set_reg(rt, vtimer.read_cval());
+        }
+        0xE240 => {
+            vtimer.write_cval(vcpu.get_reg(rt));
+        }
         0xE280 => {
             let val = vtimer.read_cval().wrapping_sub(vtimer.counter) as i32 as i64 as u64;
             vcpu.set_reg(rt, val);
         }
-        0xE2C0 => { vtimer.write_tval(vcpu.get_reg(rt)); }
+        0xE2C0 => {
+            vtimer.write_tval(vcpu.get_reg(rt));
+        }
         _ => return false,
     }
 
@@ -237,11 +252,7 @@ fn handle_patched_timer_brk(
 /// Check if an HVC immediate is a patched timer read, and handle it.
 /// Only used on HVF where timer instructions are patched to HVC.
 #[cfg(target_os = "macos")]
-fn handle_patched_timer_hvc(
-    vcpu: &VcpuHandle,
-    syndrome: u64,
-    vtimer: &mut VirtualTimer,
-) -> bool {
+fn handle_patched_timer_hvc(vcpu: &VcpuHandle, syndrome: u64, vtimer: &mut VirtualTimer) -> bool {
     let imm = (syndrome & 0xFFFF) as u16;
     if imm < HVC_COUNTER_READ {
         return false;
@@ -291,9 +302,13 @@ fn handle_patched_timer_hvc(
 
 /// Load kernel image, optional initrd, and generated DTB into a freshly
 /// allocated guest memory region.
-fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>, quiet: bool) -> LoadedKernel {
-    let kernel_data = std::fs::read(kernel_path)
-        .unwrap_or_else(|e| panic!("Failed to read kernel: {}", e));
+fn load_kernel_and_initrd(
+    kernel_path: &Path,
+    initrd_path: Option<&Path>,
+    quiet: bool,
+) -> LoadedKernel {
+    let kernel_data =
+        std::fs::read(kernel_path).unwrap_or_else(|e| panic!("Failed to read kernel: {}", e));
     eprintln!("Kernel image: {} bytes", kernel_data.len());
 
     let initrd_data = initrd_path.map(|p| {
@@ -351,7 +366,13 @@ fn load_kernel_and_initrd(kernel_path: &Path, initrd_path: Option<&Path>, quiet:
     };
 
     // Generate DTB and place it near end of RAM
-    let dtb_data = dtb::build_dtb(GUEST_RAM_BASE, GUEST_RAM_SIZE, initrd_start, initrd_end, quiet);
+    let dtb_data = dtb::build_dtb(
+        GUEST_RAM_BASE,
+        GUEST_RAM_SIZE,
+        initrd_start,
+        initrd_end,
+        quiet,
+    );
     let dtb_offset = ram_size - page_align(dtb_data.len());
     unsafe {
         ptr::copy_nonoverlapping(dtb_data.as_ptr(), mem.add(dtb_offset), dtb_data.len());
@@ -392,7 +413,13 @@ fn install_sigusr1_handler() {
 /// check for the READY sentinel during snapshot boot.
 /// On KVM, sends a signal to the vCPU thread to cause KVM_RUN to return EINTR.
 /// On HVF, calls hv_vcpus_exit.
-fn spawn_watchdog(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::JoinHandle<()>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+fn spawn_watchdog(
+    _vcpu: &VcpuHandle,
+    duration_secs: u32,
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let iterations = (duration_secs as u64) * 10;
@@ -409,7 +436,9 @@ fn spawn_watchdog(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::JoinH
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
             #[cfg(target_os = "linux")]
-            unsafe { libc::syscall(libc::SYS_tgkill, libc::getpid(), vcpu_tid, libc::SIGUSR1); }
+            unsafe {
+                libc::syscall(libc::SYS_tgkill, libc::getpid(), vcpu_tid, libc::SIGUSR1);
+            }
             // On macOS, hv_vcpus_exit would be called here via vcpu.force_exit(),
             // but we don't have a Send reference to the vcpu from another thread.
             // The HVF backend's original code used the raw vcpu handle directly.
@@ -423,7 +452,13 @@ fn spawn_watchdog(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::JoinH
 extern "C" fn noop_signal_handler(_sig: libc::c_int) {}
 
 /// Like spawn_watchdog but with 1ms sleep intervals for low-latency forks.
-fn spawn_watchdog_fast(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::JoinHandle<()>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+fn spawn_watchdog_fast(
+    _vcpu: &VcpuHandle,
+    duration_secs: u32,
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
     #[cfg(target_os = "linux")]
     install_sigusr1_handler();
 
@@ -440,7 +475,9 @@ fn spawn_watchdog_fast(_vcpu: &VcpuHandle, duration_secs: u32) -> (std::thread::
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
             #[cfg(target_os = "linux")]
-            unsafe { libc::syscall(libc::SYS_tgkill, libc::getpid(), vcpu_tid, libc::SIGUSR1); }
+            unsafe {
+                libc::syscall(libc::SYS_tgkill, libc::getpid(), vcpu_tid, libc::SIGUSR1);
+            }
         }
     });
     (handle, stop)
@@ -503,7 +540,10 @@ fn setup_cpu_for_linux(vcpu: &VcpuHandle, kernel_entry: u64, dtb_addr: u64) -> b
             true
         }
         Err(e) => {
-            eprintln!("CNTHCTL_EL2 not available ({}) — will use binary patching for determinism", e);
+            eprintln!(
+                "CNTHCTL_EL2 not available ({}) — will use binary patching for determinism",
+                e
+            );
             false
         }
     };
@@ -549,8 +589,14 @@ fn run_linux_vcpu_loop(
             let elapsed = now.duration_since(start_time);
             eprintln!(
                 "[{:.1}s, {} exits] EL{} PC=0x{:x} mmio={} hvc={} timer={} canceled={}",
-                elapsed.as_secs_f64(), exit_count, el, pc,
-                mmio_count, hvc_count, timer_count, canceled_count,
+                elapsed.as_secs_f64(),
+                exit_count,
+                el,
+                pc,
+                mmio_count,
+                hvc_count,
+                timer_count,
+                canceled_count,
             );
             last_log = now;
         }
@@ -597,22 +643,38 @@ fn run_linux_vcpu_loop(
                         }
                         psci::PsciResult::SystemOff => {
                             eprintln!("\nPSCI SYSTEM_OFF");
-                            print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
+                            print_exit_stats(
+                                exit_count,
+                                mmio_count,
+                                hvc_count,
+                                timer_count,
+                                wfi_count,
+                            );
                             return VmExitReason::SystemOff;
                         }
                         psci::PsciResult::SystemReset => {
                             eprintln!("\nPSCI SYSTEM_RESET");
-                            print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
+                            print_exit_stats(
+                                exit_count,
+                                mmio_count,
+                                hvc_count,
+                                timer_count,
+                                wfi_count,
+                            );
                             return VmExitReason::SystemOff;
                         }
                     }
                 } else {
                     static UNKNOWN_HVC_LOGGED: std::sync::atomic::AtomicU64 =
                         std::sync::atomic::AtomicU64::new(0);
-                    let prev = UNKNOWN_HVC_LOGGED
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let prev =
+                        UNKNOWN_HVC_LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if prev < 10 {
-                        eprintln!("Unknown {}: x0=0x{:x}", if is_smc { "SMC" } else { "HVC" }, x0);
+                        eprintln!(
+                            "Unknown {}: x0=0x{:x}",
+                            if is_smc { "SMC" } else { "HVC" },
+                            x0
+                        );
                     }
                     vcpu.set_reg(hypervisor::REG_X0, (-1i32) as u64);
                 }
@@ -717,11 +779,7 @@ fn run_linux_vcpu_loop(
     }
 }
 
-fn handle_mmio(
-    vcpu: &mut VcpuHandle,
-    access: &MmioAccess,
-    uart: &Pl011,
-) {
+fn handle_mmio(vcpu: &mut VcpuHandle, access: &MmioAccess, uart: &Pl011) {
     if uart.contains(access.addr) {
         let offset = access.addr - uart.base_addr;
         if access.is_write {
@@ -764,7 +822,10 @@ fn handle_sys_reg_trap(vcpu: &VcpuHandle, syndrome: u64) {
 
     eprintln!(
         "Trapped sys reg: ISS=0x{:x} dir={} Rt=x{} PC=0x{:x}",
-        syndrome & 0x1FFFFF, direction, rt, pc
+        syndrome & 0x1FFFFF,
+        direction,
+        rt,
+        pc
     );
 
     if direction == 1 {
@@ -791,7 +852,13 @@ fn print_exit_stats(exits: u64, mmio: u64, hvc: u64, timer: u64, wfi: u64) {
 /// Boot a Linux kernel.
 pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>, quiet: bool) {
     let loaded = load_kernel_and_initrd(kernel_path, initrd_path, quiet);
-    let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr, .. } = loaded;
+    let LoadedKernel {
+        mem,
+        ram_size,
+        kernel_entry,
+        dtb_addr,
+        ..
+    } = loaded;
 
     let mut vm = VmHandle::create();
     vm.map_memory(mem, GUEST_RAM_BASE, ram_size, true);
@@ -818,7 +885,9 @@ pub fn cmd_boot_linux(kernel_path: &Path, initrd_path: Option<&Path>, quiet: boo
         VmExitReason::Error(e) => eprintln!("VM error: {}", e),
     }
 
-    unsafe { libc::munmap(mem as *mut libc::c_void, ram_size); }
+    unsafe {
+        libc::munmap(mem as *mut libc::c_void, ram_size);
+    }
 }
 
 // ── Snapshot/Fork ────────────────────────────────────────────────────────────
@@ -832,7 +901,13 @@ pub fn cmd_snapshot_linux(
     quiet: bool,
 ) {
     let loaded = load_kernel_and_initrd(kernel_path, initrd_path, quiet);
-    let LoadedKernel { mem, ram_size, kernel_entry, dtb_addr, kernel_file_size } = loaded;
+    let LoadedKernel {
+        mem,
+        ram_size,
+        kernel_entry,
+        dtb_addr,
+        kernel_file_size,
+    } = loaded;
 
     let mut vm = VmHandle::create();
     vm.map_memory(mem, GUEST_RAM_BASE, ram_size, true);
@@ -849,7 +924,11 @@ pub fn cmd_snapshot_linux(
 
     let (watchdog, watchdog_stop) = spawn_watchdog(&vcpu, 30);
     let result = run_linux_vcpu_loop(
-        &mut vcpu, mem, ram_size, &uart, &mut vtimer,
+        &mut vcpu,
+        mem,
+        ram_size,
+        &uart,
+        &mut vtimer,
         Some(shared_mem as *const u8),
     );
     watchdog_stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -880,7 +959,11 @@ pub fn cmd_snapshot_linux(
         eprintln!(
             "Patched {} timer instructions in snapshot ({} mode)",
             patched,
-            match &mode { #[cfg(target_os = "macos")] TimerPatchMode::Hvc => "HVC", TimerPatchMode::Brk => "BRK" }
+            match &mode {
+                #[cfg(target_os = "macos")]
+                TimerPatchMode::Hvc => "HVC",
+                TimerPatchMode::Brk => "BRK",
+            }
         );
 
         // Note: no VA-to-GPA offset needed — the BRK immediate is extracted
@@ -902,14 +985,17 @@ pub fn cmd_snapshot_linux(
     std::fs::write(
         template_dir.join("timer_patched"),
         if timer_patched { "brk" } else { "none" },
-    ).expect("write timer_patched");
+    )
+    .expect("write timer_patched");
 
     // TODO: Save GIC state, ICC regs, vtimer state for KVM
 
     let shared_bytes = unsafe { std::slice::from_raw_parts(shared_mem, LINUX_SHARED_SIZE) };
     std::fs::write(template_dir.join("shared.mem"), shared_bytes).expect("write shared.mem");
 
-    unsafe { libc::munmap(mem as *mut libc::c_void, ram_size); }
+    unsafe {
+        libc::munmap(mem as *mut libc::c_void, ram_size);
+    }
 
     eprintln!(
         "Template saved to {}/ (mem={:.1} MiB)",
@@ -927,8 +1013,8 @@ pub fn cmd_fork_linux(template_dir: &Path, inbox_data: &[u8]) {
     let ram_size = template.mem_size;
 
     // Check if the template was built with BRK timer patching
-    let timer_patched = std::fs::read_to_string(template_dir.join("timer_patched"))
-        .unwrap_or_default();
+    let timer_patched =
+        std::fs::read_to_string(template_dir.join("timer_patched")).unwrap_or_default();
     let needs_guest_debug = timer_patched.trim() == "brk";
 
     let shared_mem = alloc_pages(LINUX_SHARED_SIZE);
@@ -1022,12 +1108,15 @@ pub fn cmd_serve_linux(template_dir: &Path) {
     let template = Template::load(template_dir);
     let ram_size = template.mem_size;
 
-    let timer_patched = std::fs::read_to_string(template_dir.join("timer_patched"))
-        .unwrap_or_default();
+    let timer_patched =
+        std::fs::read_to_string(template_dir.join("timer_patched")).unwrap_or_default();
     let needs_guest_debug = timer_patched.trim() == "brk";
 
     let setup_time = t0.elapsed();
-    eprintln!("Serve: template loaded in {:.1}ms. Reading JS from stdin...", setup_time.as_secs_f64() * 1000.0);
+    eprintln!(
+        "Serve: template loaded in {:.1}ms. Reading JS from stdin...",
+        setup_time.as_secs_f64() * 1000.0
+    );
 
     use std::io::BufRead;
     let stdin = std::io::stdin();
@@ -1105,15 +1194,19 @@ mod tests {
     use super::*;
 
     #[allow(dead_code)]
-    fn make_data_abort_syndrome(
-        isv: bool, sas: u32, sse: bool, srt: u32, wnr: bool,
-    ) -> u64 {
+    fn make_data_abort_syndrome(isv: bool, sas: u32, sse: bool, srt: u32, wnr: bool) -> u64 {
         let mut s: u64 = 0;
-        if isv { s |= 1 << 24; }
+        if isv {
+            s |= 1 << 24;
+        }
         s |= ((sas as u64) & 3) << 22;
-        if sse { s |= 1 << 21; }
+        if sse {
+            s |= 1 << 21;
+        }
         s |= ((srt as u64) & 0x1f) << 16;
-        if wnr { s |= 1 << 6; }
+        if wnr {
+            s |= 1 << 6;
+        }
         s
     }
 
