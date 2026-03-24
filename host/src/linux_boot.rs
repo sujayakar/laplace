@@ -42,28 +42,68 @@ struct LoadedKernel {
 
 // ── Timer instruction patching ────────────────────────────────────────────────
 //
-// On M1/HVF (no EL2), we can't trap CNTVCT_EL0 reads via CNTHCTL_EL2.
-// Instead, we binary-patch the kernel image: replace every MRS/MSR to
-// timer registers with an HVC instruction. Both are 4 bytes, and the
-// HVC immediate encodes the operation type + target register.
+// When CNTHCTL_EL2 is unavailable (pKVM, M1 HVF without EL2), we binary-patch
+// the kernel image to replace timer MRS/MSR instructions with trap instructions.
 //
-// On KVM, CNTHCTL_EL2 trapping is natively supported, so patching is not
-// needed. We only enable it when CONVEX_PATCH_TIMER is set.
+// Two patching modes:
+// - **HVC mode** (HVF): Replace with HVC #imm. HVF forwards all HVCs to
+//   userspace where our vtimer handles them.
+// - **MMIO mode** (KVM): Replace with LDR/STR Xt, [X18, #offset]. KVM exits
+//   to userspace on MMIO access. X18 (platform register) is pre-loaded with
+//   the MMIO timer device base address before the VM resumes.
+//
+// Both modes are 4 bytes per instruction, preserving code layout.
+
+// ── HVC patching (HVF) ──
 
 // HVC immediate encoding for patched timer instructions:
+#[cfg(target_os = "macos")]
 const HVC_COUNTER_READ: u16 = 0x100;
+#[cfg(target_os = "macos")]
 const HVC_FREQ_READ: u16 = 0x140;
+#[cfg(target_os = "macos")]
 const HVC_CTL_READ: u16 = 0x180;
+#[cfg(target_os = "macos")]
 const HVC_CTL_WRITE: u16 = 0x1C0;
+#[cfg(target_os = "macos")]
 const HVC_CVAL_READ: u16 = 0x200;
+#[cfg(target_os = "macos")]
 const HVC_CVAL_WRITE: u16 = 0x240;
+#[cfg(target_os = "macos")]
 const HVC_TVAL_READ: u16 = 0x280;
+#[cfg(target_os = "macos")]
 const HVC_TVAL_WRITE: u16 = 0x2C0;
 
-/// Encode an HVC #imm16 instruction.
+#[cfg(target_os = "macos")]
 fn encode_hvc(imm: u16) -> u32 {
     0xD400_0002 | ((imm as u32) << 5)
 }
+
+// ── BRK patching (KVM) ──
+//
+// On KVM where CNTHCTL_EL2 is unavailable (pKVM), we replace timer instructions
+// with BRK #imm16. With KVM_SET_GUEST_DEBUG enabled, BRK exits to userspace
+// as KVM_EXIT_DEBUG. The immediate encodes operation type + register, same
+// scheme as HVC patching on HVF.
+//
+// BRK #imm16 encoding: 0xD4200000 | (imm16 << 5)
+
+/// Encode BRK #imm16 instruction.
+fn encode_brk(imm: u16) -> u32 {
+    0xD420_0000 | ((imm as u32) << 5)
+}
+
+// BRK immediate encoding (same scheme as HVC):
+const BRK_COUNTER_READ: u16 = 0x100;
+const BRK_FREQ_READ: u16 = 0x140;
+const BRK_CTL_READ: u16 = 0x180;
+const BRK_CTL_WRITE: u16 = 0x1C0;
+const BRK_CVAL_READ: u16 = 0x200;
+const BRK_CVAL_WRITE: u16 = 0x240;
+const BRK_TVAL_READ: u16 = 0x280;
+const BRK_TVAL_WRITE: u16 = 0x2C0;
+
+// ── Common patching infrastructure ──
 
 unsafe fn read_insn(ptr: *const u8, offset: usize) -> u32 {
     ptr::read(ptr.add(offset) as *const u32)
@@ -73,8 +113,17 @@ unsafe fn write_insn(ptr: *mut u8, offset: usize, insn: u32) {
     ptr::write(ptr.add(offset) as *mut u32, insn);
 }
 
+/// Which trap mechanism to use for timer patching.
+enum TimerPatchMode {
+    /// Replace with HVC #imm (HVF — exits to userspace).
+    #[cfg(target_os = "macos")]
+    Hvc,
+    /// Replace with BRK #imm16 (KVM — debug exit with KVM_SET_GUEST_DEBUG).
+    Brk,
+}
+
 /// Patch all timer register accesses in the loaded kernel image.
-fn patch_timer_reads(mem: *mut u8, kernel_offset: usize, kernel_file_size: usize) -> usize {
+fn patch_timer_reads(mem: *mut u8, kernel_offset: usize, kernel_file_size: usize, mode: &TimerPatchMode) -> usize {
     let mut patched = 0;
     let kernel_start = unsafe { mem.add(kernel_offset) };
 
@@ -83,15 +132,51 @@ fn patch_timer_reads(mem: *mut u8, kernel_offset: usize, kernel_file_size: usize
         let rt = insn & 0x1F;
 
         let replacement = match insn & 0xFFFF_FFE0 {
-            0xd53b_e040 => encode_hvc(HVC_COUNTER_READ + rt as u16),  // CNTVCT_EL0
-            0xd53b_e020 => encode_hvc(HVC_COUNTER_READ + rt as u16),  // CNTPCT_EL0
-            0xd53b_e000 => encode_hvc(HVC_FREQ_READ + rt as u16),     // CNTFRQ_EL0
-            0xd53b_e320 => encode_hvc(HVC_CTL_READ + rt as u16),      // CNTV_CTL_EL0 read
-            0xd53b_e340 => encode_hvc(HVC_CVAL_READ + rt as u16),     // CNTV_CVAL_EL0 read
-            0xd53b_e300 => encode_hvc(HVC_TVAL_READ + rt as u16),     // CNTV_TVAL_EL0 read
-            0xd51b_e320 => encode_hvc(HVC_CTL_WRITE + rt as u16),     // CNTV_CTL_EL0 write
-            0xd51b_e340 => encode_hvc(HVC_CVAL_WRITE + rt as u16),    // CNTV_CVAL_EL0 write
-            0xd51b_e300 => encode_hvc(HVC_TVAL_WRITE + rt as u16),    // CNTV_TVAL_EL0 write
+            // Counter reads (MRS)
+            0xd53b_e040 | // CNTVCT_EL0
+            0xd53b_e020   // CNTPCT_EL0
+            => match mode {
+                #[cfg(target_os = "macos")]
+                TimerPatchMode::Hvc => encode_hvc(HVC_COUNTER_READ + rt as u16),
+                TimerPatchMode::Brk => encode_brk(BRK_COUNTER_READ + rt as u16),
+            },
+            0xd53b_e000 => match mode { // CNTFRQ_EL0
+                #[cfg(target_os = "macos")]
+                TimerPatchMode::Hvc => encode_hvc(HVC_FREQ_READ + rt as u16),
+                TimerPatchMode::Brk => encode_brk(BRK_FREQ_READ + rt as u16),
+            },
+            // Virtual timer control (MRS reads)
+            0xd53b_e320 => match mode { // CNTV_CTL_EL0 read
+                #[cfg(target_os = "macos")]
+                TimerPatchMode::Hvc => encode_hvc(HVC_CTL_READ + rt as u16),
+                TimerPatchMode::Brk => encode_brk(BRK_CTL_READ + rt as u16),
+            },
+            0xd53b_e340 => match mode { // CNTV_CVAL_EL0 read
+                #[cfg(target_os = "macos")]
+                TimerPatchMode::Hvc => encode_hvc(HVC_CVAL_READ + rt as u16),
+                TimerPatchMode::Brk => encode_brk(BRK_CVAL_READ + rt as u16),
+            },
+            0xd53b_e300 => match mode { // CNTV_TVAL_EL0 read
+                #[cfg(target_os = "macos")]
+                TimerPatchMode::Hvc => encode_hvc(HVC_TVAL_READ + rt as u16),
+                TimerPatchMode::Brk => encode_brk(BRK_TVAL_READ + rt as u16),
+            },
+            // Virtual timer control (MSR writes)
+            0xd51b_e320 => match mode { // CNTV_CTL_EL0 write
+                #[cfg(target_os = "macos")]
+                TimerPatchMode::Hvc => encode_hvc(HVC_CTL_WRITE + rt as u16),
+                TimerPatchMode::Brk => encode_brk(BRK_CTL_WRITE + rt as u16),
+            },
+            0xd51b_e340 => match mode { // CNTV_CVAL_EL0 write
+                #[cfg(target_os = "macos")]
+                TimerPatchMode::Hvc => encode_hvc(HVC_CVAL_WRITE + rt as u16),
+                TimerPatchMode::Brk => encode_brk(BRK_CVAL_WRITE + rt as u16),
+            },
+            0xd51b_e300 => match mode { // CNTV_TVAL_EL0 write
+                #[cfg(target_os = "macos")]
+                TimerPatchMode::Hvc => encode_hvc(HVC_TVAL_WRITE + rt as u16),
+                TimerPatchMode::Brk => encode_brk(BRK_TVAL_WRITE + rt as u16),
+            },
             _ => continue,
         };
 
@@ -101,7 +186,65 @@ fn patch_timer_reads(mem: *mut u8, kernel_offset: usize, kernel_file_size: usize
     patched
 }
 
+/// Handle a BRK debug exit for patched timer instructions (KVM).
+/// The BRK immediate encodes the operation type + register, same as HVC.
+/// Returns true if this was a patched timer BRK.
+fn handle_patched_timer_brk(
+    vcpu: &VcpuHandle,
+    pc: u64,
+    guest_mem: *mut u8,
+    vtimer: &mut VirtualTimer,
+) -> bool {
+    // Read the BRK instruction from guest memory to extract the immediate.
+    // PC points to the BRK instruction (KVM_EXIT_DEBUG doesn't advance PC).
+    let gpa = pc.wrapping_sub(0xFFFF_8000_0000_0000).wrapping_add(GUEST_RAM_BASE);
+    if gpa < GUEST_RAM_BASE || gpa >= GUEST_RAM_BASE + GUEST_RAM_SIZE {
+        return false;
+    }
+    let offset = (gpa - GUEST_RAM_BASE) as usize;
+    let insn = unsafe { ptr::read(guest_mem.add(offset) as *const u32) };
+
+    // Check if it's a BRK instruction: 0xD4200000 | (imm16 << 5)
+    if insn & 0xFFE0001F != 0xD420_0000 {
+        return false;
+    }
+    let imm = ((insn >> 5) & 0xFFFF) as u16;
+    if imm < BRK_COUNTER_READ {
+        return false;
+    }
+
+    let kind = imm & 0xFFC0;
+    let rt = (imm & 0x1F) as u32;
+
+    match kind {
+        0x100 => {
+            let val = vtimer.read_counter();
+            vcpu.set_reg(rt, val);
+            if vtimer.check_pending() {
+                vcpu.set_pending_interrupt(true);
+            }
+        }
+        0x140 => { vcpu.set_reg(rt, crate::vtimer::COUNTER_FREQ_HZ); }
+        0x180 => { vcpu.set_reg(rt, vtimer.read_ctl()); }
+        0x1C0 => { vtimer.write_ctl(vcpu.get_reg(rt)); }
+        0x200 => { vcpu.set_reg(rt, vtimer.read_cval()); }
+        0x240 => { vtimer.write_cval(vcpu.get_reg(rt)); }
+        0x280 => {
+            let val = vtimer.read_cval().wrapping_sub(vtimer.counter) as i32 as i64 as u64;
+            vcpu.set_reg(rt, val);
+        }
+        0x2C0 => { vtimer.write_tval(vcpu.get_reg(rt)); }
+        _ => return false,
+    }
+
+    // Advance PC past the BRK (KVM_EXIT_DEBUG doesn't auto-advance)
+    vcpu.set_reg(hypervisor::REG_PC, pc + 4);
+    true
+}
+
 /// Check if an HVC immediate is a patched timer read, and handle it.
+/// Only used on HVF where timer instructions are patched to HVC.
+#[cfg(target_os = "macos")]
 fn handle_patched_timer_hvc(
     vcpu: &VcpuHandle,
     syndrome: u64,
@@ -329,6 +472,9 @@ fn setup_shared_region(vm: &mut VmHandle) -> *mut u8 {
     shared_mem
 }
 
+// Note: No MMIO hole needed for BRK-based timer patching — BRK traps via
+// KVM_EXIT_DEBUG regardless of memory mapping.
+
 /// Set up CPU state for Linux boot. Returns true if hardware timer
 /// trapping is available (CNTHCTL_EL2), false if binary patching is needed.
 fn setup_cpu_for_linux(vcpu: &VcpuHandle, kernel_entry: u64, dtb_addr: u64) -> bool {
@@ -436,8 +582,14 @@ fn run_linux_vcpu_loop(
                 let x0 = vcpu.get_reg(hypervisor::REG_X0);
                 let x1 = vcpu.get_reg(hypervisor::REG_X1);
 
-                if handle_patched_timer_hvc(vcpu, syndrome, vtimer) {
-                    // Timer read handled
+                // On HVF, check for patched timer HVCs (imm >= 0x100)
+                #[cfg(target_os = "macos")]
+                let timer_handled = handle_patched_timer_hvc(vcpu, syndrome, vtimer);
+                #[cfg(target_os = "linux")]
+                let timer_handled = false; // KVM uses MMIO patching, not HVC
+
+                if timer_handled {
+                    // Timer read handled via HVC patching
                 } else if x0 == convex_shared::HC_READY {
                     eprintln!("Guest signaled HC_READY (snapshot point)");
                     print_exit_stats(exit_count, mmio_count, hvc_count, timer_count, wfi_count);
@@ -484,6 +636,19 @@ fn run_linux_vcpu_loop(
             VcpuExit::Mmio(access) => {
                 mmio_count += 1;
                 handle_mmio(vcpu, &access, uart);
+            }
+
+            VcpuExit::Debug => {
+                // BRK instruction from patched timer code (KVM with guest debug).
+                // Read the instruction at PC to identify the timer operation.
+                let pc = vcpu.get_reg(hypervisor::REG_PC);
+                if handle_patched_timer_brk(vcpu, pc, _guest_mem, vtimer) {
+                    timer_count += 1;
+                } else {
+                    eprintln!("Unexpected debug exit at PC=0x{:x}", pc);
+                    // Advance past the BRK to avoid infinite loop
+                    vcpu.set_reg(hypervisor::REG_PC, pc + 4);
+                }
             }
 
             VcpuExit::UndecodableMmio { syndrome, ipa } => {
@@ -707,22 +872,20 @@ pub fn cmd_snapshot_linux(
 
     // Timer determinism for fork:
     // - If CNTHCTL_EL2 trapping works: deterministic (no patching needed)
-    // - If not (pKVM/M1): binary patching works on HVF (HVC exits to userspace)
-    //   but NOT on KVM (HVC is handled in-kernel as PSCI, not forwarded).
-    //   On KVM without CNTHCTL_EL2, timer is non-deterministic for now.
-    //   TODO: Use MMIO-based timer trapping or test on non-pKVM KVM host.
-    #[cfg(target_os = "macos")]
+    // - HVF without EL2: patch with HVC instructions (exits to userspace)
+    // - KVM without CNTHCTL_EL2 (pKVM): patch with MMIO LDR/STR [X18, #off]
+    //   (KVM_EXIT_MMIO exits to userspace). Must set X18 = TIMER_MMIO_GPA.
     if !has_timer_trapping {
         let kernel_load_offset = KERNEL_OFFSET as usize;
-        let patched = patch_timer_reads(mem, kernel_load_offset, kernel_file_size);
-        eprintln!("Patched {} timer instructions in snapshot for deterministic fork", patched);
-    }
-    #[cfg(target_os = "linux")]
-    if !has_timer_trapping {
+        #[cfg(target_os = "macos")]
+        let mode = TimerPatchMode::Hvc;
+        #[cfg(target_os = "linux")]
+        let mode = TimerPatchMode::Brk;
+        let patched = patch_timer_reads(mem, kernel_load_offset, kernel_file_size, &mode);
         eprintln!(
-            "WARNING: Timer not deterministic on this KVM (pKVM). \
-             Binary patching not supported on KVM (HVC handled in-kernel). \
-             Use a non-pKVM host for deterministic execution."
+            "Patched {} timer instructions in snapshot ({} mode)",
+            patched,
+            match &mode { #[cfg(target_os = "macos")] TimerPatchMode::Hvc => "HVC", TimerPatchMode::Brk => "BRK" }
         );
     }
 
@@ -744,7 +907,14 @@ pub fn cmd_snapshot_linux(
     };
     template.save(template_dir);
 
-    // TODO: Save GIC state, ICC regs, timer state for KVM
+    // Save whether timer was patched (fork needs to create MMIO hole)
+    let timer_patched = !has_timer_trapping;
+    std::fs::write(
+        template_dir.join("timer_patched"),
+        if timer_patched { "brk" } else { "none" },
+    ).expect("write timer_patched");
+
+    // TODO: Save GIC state, ICC regs, vtimer state for KVM
 
     let shared_bytes = unsafe { std::slice::from_raw_parts(shared_mem, LINUX_SHARED_SIZE) };
     std::fs::write(template_dir.join("shared.mem"), shared_bytes).expect("write shared.mem");
@@ -763,6 +933,11 @@ pub fn cmd_fork_linux(template_dir: &Path, inbox_data: &[u8]) {
     let mem = template.mmap_cow_memory();
     let ram_size = template.mem_size;
 
+    // Check if the template was built with BRK timer patching
+    let timer_patched = std::fs::read_to_string(template_dir.join("timer_patched"))
+        .unwrap_or_default();
+    let needs_guest_debug = timer_patched.trim() == "brk";
+
     let shared_mem = alloc_pages(LINUX_SHARED_SIZE);
     assert!(inbox_data.len() < LINUX_INBOX_SIZE, "inbox data too large");
     unsafe {
@@ -778,6 +953,13 @@ pub fn cmd_fork_linux(template_dir: &Path, inbox_data: &[u8]) {
     let _gic = vm.create_gic(dtb::GICD_BASE, dtb::GICR_BASE);
 
     vcpu.set_sys_reg(SysReg::MPIDR_EL1, 0x8000_0000);
+
+    // If template was built with BRK timer patching, enable guest debug
+    // so BRK instructions exit to userspace instead of being delivered
+    // as guest exceptions.
+    if needs_guest_debug {
+        vcpu.enable_guest_debug();
+    }
 
     // TODO: Restore GIC state, ICC regs, vtimer state
 
@@ -844,52 +1026,55 @@ mod tests {
     }
 
     #[test]
-    fn encode_hvc_encoding() {
-        assert_eq!(encode_hvc(0), 0xD4000002);
-        assert_eq!(encode_hvc(0x100), 0xD4000002 | (0x100 << 5));
-        let insn = encode_hvc(HVC_COUNTER_READ + 5);
-        assert_eq!(insn & 0xFFE0001F, 0xD4000002);
-        assert_eq!((insn >> 5) & 0xFFFF, (HVC_COUNTER_READ + 5) as u32);
-    }
-
-    #[test]
-    fn patch_timer_reads_replaces_cntvct() {
+    fn patch_timer_reads_brk_replaces_cntvct() {
         let mut buf = vec![0u8; 16];
         let mrs_x0_cntvct: u32 = 0xd53be040;
         let nop: u32 = 0xd503201f;
         unsafe {
             ptr::write(buf.as_mut_ptr() as *mut u32, mrs_x0_cntvct);
             ptr::write(buf.as_mut_ptr().add(4) as *mut u32, nop);
-            ptr::write(buf.as_mut_ptr().add(8) as *mut u32, 0xd53be041);
+            ptr::write(buf.as_mut_ptr().add(8) as *mut u32, 0xd53be041); // MRS X1, CNTVCT
             ptr::write(buf.as_mut_ptr().add(12) as *mut u32, nop);
         }
 
-        let count = patch_timer_reads(buf.as_mut_ptr(), 0, 16);
+        let count = patch_timer_reads(buf.as_mut_ptr(), 0, 16, &TimerPatchMode::Brk);
         assert_eq!(count, 2);
 
+        // First should be BRK #0x100 (counter read, X0)
         let patched0 = unsafe { ptr::read(buf.as_ptr() as *const u32) };
-        assert_eq!(patched0, encode_hvc(HVC_COUNTER_READ + 0));
+        assert_eq!(patched0, encode_brk(BRK_COUNTER_READ + 0));
 
+        // Second should be BRK #0x101 (counter read, X1)
         let patched1 = unsafe { ptr::read(buf.as_ptr().add(8) as *const u32) };
-        assert_eq!(patched1, encode_hvc(HVC_COUNTER_READ + 1));
+        assert_eq!(patched1, encode_brk(BRK_COUNTER_READ + 1));
 
+        // NOP should be unchanged
         let nop0 = unsafe { ptr::read(buf.as_ptr().add(4) as *const u32) };
         assert_eq!(nop0, nop);
     }
 
     #[test]
-    fn patch_timer_reads_handles_msr_writes() {
+    fn patch_timer_reads_brk_handles_msr_writes() {
         let mut buf = vec![0u8; 8];
-        let msr_x2_cval: u32 = 0xd51be342;
+        let msr_x2_cval: u32 = 0xd51be342; // MSR CNTV_CVAL_EL0, X2
         unsafe {
             ptr::write(buf.as_mut_ptr() as *mut u32, msr_x2_cval);
             ptr::write(buf.as_mut_ptr().add(4) as *mut u32, 0xd503201f);
         }
 
-        let count = patch_timer_reads(buf.as_mut_ptr(), 0, 8);
+        let count = patch_timer_reads(buf.as_mut_ptr(), 0, 8, &TimerPatchMode::Brk);
         assert_eq!(count, 1);
 
+        // Should be BRK #0x242 (CVAL write, X2)
         let patched = unsafe { ptr::read(buf.as_ptr() as *const u32) };
-        assert_eq!(patched, encode_hvc(HVC_CVAL_WRITE + 2));
+        assert_eq!(patched, encode_brk(BRK_CVAL_WRITE + 2));
+    }
+
+    #[test]
+    fn encode_brk_encoding() {
+        // BRK #0 = 0xD4200000
+        assert_eq!(encode_brk(0), 0xD4200000);
+        // BRK #0x100 = 0xD4200000 | (0x100 << 5)
+        assert_eq!(encode_brk(0x100), 0xD4200000 | (0x100 << 5));
     }
 }

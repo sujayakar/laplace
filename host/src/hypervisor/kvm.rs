@@ -318,8 +318,21 @@ impl VcpuHandle {
                         data: val,
                     })
                 }
+                kvm_ioctls::VcpuExit::Hypercall(_hc) => {
+                    // KVM forwards non-PSCI HVCs via KVM_EXIT_HYPERCALL.
+                    // nr = x0 (SMCCC function ID), but we need the HVC
+                    // immediate for patched timer instructions.
+                    // Syndrome = 0 here; the caller reads x0 for PSCI dispatch
+                    // and uses handle_patched_timer_hvc for timer HVCs.
+                    VcpuExit::Hvc { syndrome: 0, is_smc: false }
+                }
                 kvm_ioctls::VcpuExit::SystemEvent(event_type, _flags) => {
                     VcpuExit::SystemEvent { event_type }
+                }
+                kvm_ioctls::VcpuExit::Debug(_) => {
+                    // BRK instruction with guest debug enabled.
+                    // Used for patched timer instructions on pKVM.
+                    VcpuExit::Debug
                 }
                 kvm_ioctls::VcpuExit::Hlt => {
                     VcpuExit::Wfi
@@ -492,6 +505,17 @@ impl VcpuHandle {
     pub fn get_vtimer_offset(&self) -> u64 {
         // TODO: Get CNTVOFF_EL2 via KVM_GET_ONE_REG when needed for snapshot/fork.
         0
+    }
+
+    /// Enable guest debug mode so BRK instructions exit to userspace.
+    /// Used for timer patching on pKVM where CNTHCTL_EL2 isn't available.
+    pub fn enable_guest_debug(&self) {
+        let debug = kvm_guest_debug {
+            control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP,
+            ..Default::default()
+        };
+        self.vcpu.set_guest_debug(&debug)
+            .expect("KVM_SET_GUEST_DEBUG failed");
     }
 
     /// Get the raw vcpu fd for advanced operations.

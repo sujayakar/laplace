@@ -53,6 +53,10 @@ pub enum VcpuExit {
     /// Undecodable data abort (ISV=0). Backend logs warning.
     UndecodableMmio { syndrome: u64, ipa: u64 },
 
+    /// Debug exit (BRK instruction with guest debug enabled).
+    /// On KVM, triggered by patched timer BRK instructions.
+    Debug,
+
     /// Unknown/unexpected exit.
     Unknown(u32),
 }
