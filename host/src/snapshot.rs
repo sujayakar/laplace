@@ -151,27 +151,22 @@ impl Template {
         }
     }
 
-    /// Get or create a memfd backed by the snapshot memory.
+    /// Get or create a memfd backed by the snapshot memory (Linux only).
     /// The memfd is created once and reused across forks (serve mode).
+    #[cfg(target_os = "linux")]
     fn get_or_create_memfd(&self) -> i32 {
         let fd = self.memfd.get();
         if fd >= 0 {
             return fd;
         }
 
-        // Create memfd and copy snapshot memory into it
         let name = std::ffi::CString::new("laplace-snapshot").unwrap();
         let memfd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
         assert!(memfd >= 0, "memfd_create failed: {}", std::io::Error::last_os_error());
 
-        // Size the memfd
-        assert_eq!(
-            unsafe { libc::ftruncate(memfd, self.mem_size as i64) },
-            0,
-            "ftruncate memfd failed"
-        );
+        let ret = unsafe { libc::ftruncate(memfd, self.mem_size as i64) };
+        assert_eq!(ret, 0, "ftruncate memfd failed");
 
-        // Map memfd as shared, copy snapshot data in, then unmap
         let dst = unsafe {
             libc::mmap(
                 ptr::null_mut(),
@@ -184,7 +179,6 @@ impl Template {
         };
         assert_ne!(dst, libc::MAP_FAILED, "mmap memfd for copy failed");
 
-        // Read snapshot file into memfd
         let data = std::fs::read(&self.mem_path).expect("read guest.mem");
         assert_eq!(data.len(), self.mem_size, "guest.mem size mismatch");
         unsafe {
@@ -197,23 +191,45 @@ impl Template {
     }
 
     /// Create a CoW memory mapping from the snapshot.
-    /// Uses memfd (in-memory, no disk I/O after first load) with MAP_NORESERVE
-    /// (don't reserve swap space for the CoW region — pages are allocated on demand).
+    /// Linux: uses memfd (in-memory, no disk I/O after first load) with MAP_NORESERVE.
+    /// macOS: uses file-backed MAP_PRIVATE.
     pub fn mmap_cow_memory(&self) -> *mut u8 {
-        let fd = self.get_or_create_memfd();
+        #[cfg(target_os = "linux")]
+        {
+            let fd = self.get_or_create_memfd();
+            let ptr = unsafe {
+                libc::mmap(
+                    ptr::null_mut(),
+                    self.mem_size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+                    fd,
+                    0,
+                )
+            };
+            assert_ne!(ptr, libc::MAP_FAILED, "mmap MAP_PRIVATE failed");
+            return ptr as *mut u8;
+        }
 
-        let ptr = unsafe {
-            libc::mmap(
-                ptr::null_mut(),
-                self.mem_size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_NORESERVE,
-                fd,
-                0,
-            )
-        };
-        assert_ne!(ptr, libc::MAP_FAILED, "mmap MAP_PRIVATE failed");
-        ptr as *mut u8
+        #[cfg(target_os = "macos")]
+        {
+            let c_path = std::ffi::CString::new(self.mem_path.to_str().unwrap()).unwrap();
+            let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY) };
+            assert!(fd >= 0, "open template memory file failed");
+            let ptr = unsafe {
+                libc::mmap(
+                    ptr::null_mut(),
+                    self.mem_size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE,
+                    fd,
+                    0,
+                )
+            };
+            unsafe { libc::close(fd); }
+            assert_ne!(ptr, libc::MAP_FAILED, "mmap MAP_PRIVATE failed");
+            return ptr as *mut u8;
+        }
     }
 }
 

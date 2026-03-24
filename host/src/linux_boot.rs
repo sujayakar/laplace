@@ -569,7 +569,8 @@ fn run_linux_vcpu_loop(
         exit_count += 1;
 
         match exit {
-            VcpuExit::Hvc { syndrome: _, is_smc } => {
+            VcpuExit::Hvc { syndrome, is_smc } => {
+                let _ = syndrome; // used on macOS for HVC timer patching
                 hvc_count += 1;
                 let x0 = vcpu.get_reg(hypervisor::REG_X0);
                 let x1 = vcpu.get_reg(hypervisor::REG_X1);

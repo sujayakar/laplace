@@ -480,6 +480,10 @@ impl VcpuHandle {
     }
 
     /// Get the raw HVF vcpu handle (for Phase 1 code that needs direct FFI access).
+    /// Enable guest debug. No-op on HVF (BRK patching is KVM-only;
+    /// HVF uses HVC patching which doesn't need guest debug).
+    pub fn enable_guest_debug(&self) {}
+
     pub fn raw_vcpu(&self) -> HvVcpu { self.vcpu }
 
     /// Get the raw exit pointer (for Phase 1 code).

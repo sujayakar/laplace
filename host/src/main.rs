@@ -290,7 +290,7 @@ fn fork_inner(template_dir: &Path, seed: u64, mailbox_data: &[u8], quiet: bool) 
 }
 
 /// Benchmark fork latency. Suppresses guest stdout.
-fn cmd_bench(template_dir: &Path, iterations: usize, js_code: &str) {
+pub fn cmd_bench(template_dir: &Path, iterations: usize, js_code: &str) {
     let js_bytes = js_code.as_bytes();
     let label = if js_bytes.is_empty() {
         "fork+run (empty)"
