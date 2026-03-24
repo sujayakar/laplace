@@ -16,9 +16,11 @@ kernel_url := "https://github.com/cloud-hypervisor/linux/releases/download/ch-re
 
 # Format all code
 format:
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo fmt --all
-    for crate in guest init runner-js runner-v8; do \
-        cargo fmt --manifest-path "$crate/Cargo.toml"; \
+    for crate in guest init runner-js runner-v8; do
+        cargo fmt --manifest-path "$crate/Cargo.toml"
     done
 
 # Run clippy lint checks
