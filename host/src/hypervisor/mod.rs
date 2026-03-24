@@ -17,7 +17,7 @@ mod kvm;
 
 // Re-export the selected backend's types
 #[cfg(target_os = "macos")]
-pub use hvf::{GicHandle, VcpuHandle, VmHandle};
+pub use hvf::{VcpuHandle, VmHandle};
 
 #[cfg(target_os = "linux")]
 pub use kvm::{VcpuHandle, VmHandle};
