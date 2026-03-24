@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::Path;
 use std::ptr;
 
-use crate::hypervisor::{self, SimdReg, SysReg, VcpuHandle, SNAPSHOT_SYS_REGS};
+use crate::hypervisor::{SimdReg, VcpuHandle, SNAPSHOT_SYS_REGS};
 
 /// Captured CPU state for snapshot/restore.
 pub struct CpuState {

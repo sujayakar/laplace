@@ -570,7 +570,7 @@ fn run_linux_vcpu_loop(
         exit_count += 1;
 
         match exit {
-            VcpuExit::Hvc { syndrome, is_smc } => {
+            VcpuExit::Hvc { syndrome: _, is_smc } => {
                 hvc_count += 1;
                 let x0 = vcpu.get_reg(hypervisor::REG_X0);
                 let x1 = vcpu.get_reg(hypervisor::REG_X1);
@@ -1019,17 +1019,12 @@ pub fn cmd_fork_linux(template_dir: &Path, inbox_data: &[u8]) {
 pub fn cmd_serve_linux(template_dir: &Path) {
     let t0 = std::time::Instant::now();
 
-    // Load template and create VM (one-time setup in parent)
     let template = Template::load(template_dir);
-    let mem = template.mmap_cow_memory();
     let ram_size = template.mem_size;
 
     let timer_patched = std::fs::read_to_string(template_dir.join("timer_patched"))
         .unwrap_or_default();
     let needs_guest_debug = timer_patched.trim() == "brk";
-
-    // Create shared region (will be re-created in each child via fork CoW)
-    let shared_mem = alloc_pages(LINUX_SHARED_SIZE);
 
     let setup_time = t0.elapsed();
     eprintln!("Serve: template loaded in {:.1}ms. Reading JS from stdin...", setup_time.as_secs_f64() * 1000.0);
@@ -1109,6 +1104,7 @@ pub fn cmd_serve_linux(template_dir: &Path) {
 mod tests {
     use super::*;
 
+    #[allow(dead_code)]
     fn make_data_abort_syndrome(
         isv: bool, sas: u32, sse: bool, srt: u32, wnr: bool,
     ) -> u64 {

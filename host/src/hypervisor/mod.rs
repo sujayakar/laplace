@@ -4,6 +4,7 @@
 //! - macOS: Hypervisor.framework (HVF)
 //! - Linux: KVM
 
+#[allow(dead_code)]
 pub mod types;
 
 #[cfg(target_os = "macos")]
@@ -19,7 +20,7 @@ mod kvm;
 pub use hvf::{GicHandle, VcpuHandle, VmHandle};
 
 #[cfg(target_os = "linux")]
-pub use kvm::{GicHandle, VcpuHandle, VmHandle};
+pub use kvm::{VcpuHandle, VmHandle};
 
 // Always re-export shared types
 pub use types::*;

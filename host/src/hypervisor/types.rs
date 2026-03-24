@@ -31,7 +31,7 @@ pub enum VcpuExit {
     /// On KVM, the kernel provides decoded access info and advances PC.
     Mmio(MmioAccess),
 
-    /// HVC or SMC instruction. `syndrome` is the ESR_EL2 value.
+    /// HVC or SMC instruction. `syndrome` is the ESR_EL2 value (HVF only; 0 on KVM).
     Hvc { syndrome: u64, is_smc: bool },
 
     /// WFI / WFE (EC=0x01).

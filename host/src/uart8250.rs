@@ -1,4 +1,6 @@
 //! Minimal 8250/16550A UART emulation for earlycon output.
+//! Currently unused (Cloud Hypervisor kernel uses PL011), but retained
+//! for compatibility with Firecracker kernels.
 //!
 //! The 8250 is simpler than PL011: just a handful of byte-wide registers.
 //! We only emulate enough for earlycon and console output:

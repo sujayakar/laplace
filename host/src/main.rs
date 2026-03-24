@@ -1,6 +1,7 @@
 use std::path::Path;
 
 mod dtb;
+#[allow(dead_code)]
 mod elf;
 mod hypervisor;
 mod linux_boot;
@@ -8,6 +9,7 @@ mod pl011;
 mod psci;
 mod snapshot;
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 mod uart8250;
 mod vtimer;
 
