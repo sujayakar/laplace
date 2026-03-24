@@ -18,15 +18,11 @@ jobs:
           components: rustfmt, clippy
           targets: aarch64-unknown-none,aarch64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
-      - name: Check formatting (workspace)
-        run: cargo fmt --all -- --check
-      - name: Check formatting (excluded crates)
-        run: |
-          for crate in guest init runner-js runner-v8; do
-            echo "Checking $crate..."
-            cargo fmt --manifest-path "$crate/Cargo.toml" -- --check
-          done
-      - run: cargo clippy -p convex-hypervisor -p convex-shared -- -D warnings
+      - uses: extractions/setup-just@v2
+      - run: just format
+      - name: Check no formatting changes
+        run: git diff --exit-code
+      - run: just lint
 
   macos:
     runs-on: macos-15
@@ -36,14 +32,14 @@ jobs:
         with:
           targets: aarch64-unknown-none,aarch64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
+      - uses: extractions/setup-just@v2
       - name: Build workspace
         run: cargo build -p convex-hypervisor -p convex-shared
       - name: Build init
         run: cd init && cargo build --release --target aarch64-unknown-none
       - name: Build runner-js
         run: cd runner-js && cargo build --target aarch64-unknown-linux-musl --release
-      - name: Unit tests
-        run: cargo test -p convex-hypervisor -p convex-shared
+      - run: just test
 
   linux-cross:
     runs-on: ubuntu-latest

@@ -10,6 +10,32 @@ initramfs := "/tmp/hvf-initramfs.cpio"
 linux_kernel := "kernel/Image-arm64"
 linux_template := "/tmp/hvf-linux-template"
 
+kernel_url := "https://github.com/cloud-hypervisor/linux/releases/download/ch-release-v6.16.9-20251112/Image-arm64"
+
+# ── Development commands ─────────────────────────────────────────────────────
+
+# Format all code
+format:
+    cargo fmt --all
+    for crate in guest init runner-js runner-v8; do \
+        cargo fmt --manifest-path "$crate/Cargo.toml"; \
+    done
+
+# Run clippy lint checks
+lint:
+    cargo clippy -p convex-hypervisor -p convex-shared -- -D warnings
+
+# Run all tests
+test:
+    cargo test -p convex-hypervisor -p convex-shared
+
+# Download the Cloud Hypervisor aarch64 kernel
+download-kernel:
+    mkdir -p kernel
+    curl -L -o kernel/Image-arm64 "{{kernel_url}}"
+    @echo "Kernel: $(ls -lh kernel/Image-arm64 | awk '{print $5}')"
+    @file kernel/Image-arm64
+
 # ── Top-level commands (all-in-one) ──────────────────────────────────────────
 
 # Build init + boa runner, make initramfs, snapshot. All-in-one.
