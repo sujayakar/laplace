@@ -18,18 +18,18 @@ impl CpuState {
     /// Capture all CPU state from a vCPU.
     pub fn capture(vcpu: &VcpuHandle) -> Self {
         let mut gpr = [0u64; 35];
-        for i in 0..35 {
-            gpr[i] = vcpu.get_reg(i as u32);
+        for (i, val) in gpr.iter_mut().enumerate() {
+            *val = vcpu.get_reg(i as u32);
         }
 
-        let mut sys_regs = Vec::with_capacity(SNAPSHOT_SYS_REGS.len());
-        for &reg in SNAPSHOT_SYS_REGS {
-            sys_regs.push(vcpu.get_sys_reg(reg));
-        }
+        let sys_regs: Vec<u64> = SNAPSHOT_SYS_REGS
+            .iter()
+            .map(|&reg| vcpu.get_sys_reg(reg))
+            .collect();
 
         let mut simd = [SimdReg::default(); 32];
-        for i in 0..32 {
-            simd[i] = vcpu.get_simd_reg(i as u32);
+        for (i, reg) in simd.iter_mut().enumerate() {
+            *reg = vcpu.get_simd_reg(i as u32);
         }
 
         CpuState {
@@ -231,7 +231,7 @@ impl Template {
                 )
             };
             assert_ne!(ptr, libc::MAP_FAILED, "mmap MAP_PRIVATE failed");
-            return ptr as *mut u8;
+            ptr as *mut u8
         }
 
         #[cfg(target_os = "macos")]
@@ -253,6 +253,7 @@ impl Template {
                 libc::close(fd);
             }
             assert_ne!(ptr, libc::MAP_FAILED, "mmap MAP_PRIVATE failed");
+            #[allow(clippy::needless_return)]
             return ptr as *mut u8;
         }
     }

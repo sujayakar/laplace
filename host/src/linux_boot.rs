@@ -186,7 +186,7 @@ fn patch_timer_reads(
         };
 
         unsafe {
-            write_insn(kernel_start as *mut u8, i, replacement);
+            write_insn(kernel_start, i, replacement);
         }
         patched += 1;
     }
@@ -580,8 +580,8 @@ fn run_linux_vcpu_loop(
 
     loop {
         let now = std::time::Instant::now();
-        let should_log = (exit_count > 0 && exit_count % 100_000 == 0)
-            || (now.duration_since(last_log).as_secs() >= 2 && exit_count > 0);
+        let should_log = exit_count > 0
+            && (exit_count.is_multiple_of(100_000) || now.duration_since(last_log).as_secs() >= 2);
         if should_log {
             let pc = vcpu.get_reg(hypervisor::REG_PC);
             let cpsr = vcpu.get_reg(hypervisor::REG_CPSR);

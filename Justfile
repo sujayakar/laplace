@@ -193,8 +193,8 @@ fork-linux *args: (_build-and-sign "convex-hypervisor" "convex-hypervisor")
 guest:
     cd guest && cargo build --release
 
-# Run all host tests (unit + integration)
-test: guest (_build-and-sign "convex-hypervisor" "convex-hypervisor")
+# Run all host tests including ignored (requires hypervisor entitlement on macOS)
+test-all: guest (_build-and-sign "convex-hypervisor" "convex-hypervisor")
     cargo test -p convex-hypervisor -- --include-ignored
 
 # Build and codesign the spike test binary

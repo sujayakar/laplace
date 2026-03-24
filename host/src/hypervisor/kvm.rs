@@ -16,8 +16,8 @@ use super::types::*;
 // with the KVM prefix at call time.
 
 const fn kvm_sys_reg_id(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
-    KVM_REG_ARM64 as u64
-        | KVM_REG_SIZE_U64 as u64
+    KVM_REG_ARM64
+        | KVM_REG_SIZE_U64
         | KVM_REG_ARM64_SYSREG as u64
         | (op0 << 14)
         | (op1 << 11)
@@ -39,8 +39,8 @@ fn sys_reg_to_kvm(reg: SysReg) -> u64 {
         SysReg::TCR_EL1 => kvm_sys_reg_id(3, 0, 2, 0, 2),
         // SPSR_EL1 and ELR_EL1 are core registers on KVM (in kvm_regs struct),
         // not accessible via KVM_REG_ARM64_SYSREG.
-        SysReg::SPSR_EL1 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, SPSR_EL1_OFFSET),
-        SysReg::ELR_EL1 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, ELR_EL1_OFFSET),
+        SysReg::SPSR_EL1 => kvm_core_reg_id(KVM_REG_SIZE_U64, SPSR_EL1_OFFSET),
+        SysReg::ELR_EL1 => kvm_core_reg_id(KVM_REG_SIZE_U64, ELR_EL1_OFFSET),
         SysReg::AFSR0_EL1 => kvm_sys_reg_id(3, 0, 5, 1, 0),
         SysReg::AFSR1_EL1 => kvm_sys_reg_id(3, 0, 5, 1, 1),
         SysReg::ESR_EL1 => kvm_sys_reg_id(3, 0, 5, 2, 0),
@@ -54,7 +54,7 @@ fn sys_reg_to_kvm(reg: SysReg) -> u64 {
         SysReg::CNTKCTL_EL1 => kvm_sys_reg_id(3, 0, 14, 1, 0),
         SysReg::CSSELR_EL1 => kvm_sys_reg_id(3, 1, 0, 0, 0),
         // SP_EL0 is the user-mode SP. On KVM it's in user_pt_regs.sp (core register).
-        SysReg::SP_EL0 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, SP_OFFSET),
+        SysReg::SP_EL0 => kvm_core_reg_id(KVM_REG_SIZE_U64, SP_OFFSET),
         SysReg::TPIDR_EL0 => kvm_sys_reg_id(3, 3, 13, 0, 2),
         SysReg::TPIDRRO_EL0 => kvm_sys_reg_id(3, 3, 13, 0, 3),
         SysReg::CNTV_CTL_EL0 => kvm_sys_reg_id(3, 3, 14, 3, 1),
@@ -95,7 +95,7 @@ fn sys_reg_to_kvm(reg: SysReg) -> u64 {
 //   };
 
 fn kvm_core_reg_id(size: u64, byte_offset: u64) -> u64 {
-    KVM_REG_ARM64 as u64 | KVM_REG_ARM_CORE as u64 | size | (byte_offset / 4) // KVM uses u32 granularity
+    KVM_REG_ARM64 | KVM_REG_ARM_CORE as u64 | size | (byte_offset / 4) // KVM uses u32 granularity
 }
 
 // Byte offsets into kvm_regs for core registers.
@@ -114,7 +114,7 @@ const SPSR_EL1_OFFSET: u64 = 36 * 8;
 
 /// SP_EL1 is a core register on KVM (not a sysreg). It lives in kvm_regs.sp_el1.
 const SP_EL1_CORE_REG_ID: u64 =
-    KVM_REG_ARM64 as u64 | KVM_REG_ARM_CORE as u64 | KVM_REG_SIZE_U64 as u64 | (SP_EL1_OFFSET / 4);
+    KVM_REG_ARM64 | KVM_REG_ARM_CORE as u64 | KVM_REG_SIZE_U64 | (SP_EL1_OFFSET / 4);
 // SPSR array: 5 entries at offset 36 * 8
 // const SPSR_OFFSET: u64 = 36 * 8;
 // FP/SIMD state starts after spsr[5] + padding, at offset (36 + 5 + 1) * 8 = 42 * 8
@@ -130,11 +130,11 @@ const FPCR_OFFSET: u64 = FP_REGS_OFFSET + 32 * 16 + 4; // u32 fpcr
 /// 0-30 = x0-x30, 31 = PC, 32 = FPCR, 33 = FPSR, 34 = CPSR/PSTATE.
 fn gpr_to_kvm_id(reg: u32) -> u64 {
     match reg {
-        0..=30 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, gpr_offset(reg)),
-        31 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, PC_OFFSET), // PC
-        32 => kvm_core_reg_id(KVM_REG_SIZE_U32 as u64, FPCR_OFFSET), // FPCR (32-bit)
-        33 => kvm_core_reg_id(KVM_REG_SIZE_U32 as u64, FPSR_OFFSET), // FPSR (32-bit)
-        34 => kvm_core_reg_id(KVM_REG_SIZE_U64 as u64, PSTATE_OFFSET), // CPSR/PSTATE
+        0..=30 => kvm_core_reg_id(KVM_REG_SIZE_U64, gpr_offset(reg)),
+        31 => kvm_core_reg_id(KVM_REG_SIZE_U64, PC_OFFSET), // PC
+        32 => kvm_core_reg_id(KVM_REG_SIZE_U32, FPCR_OFFSET), // FPCR (32-bit)
+        33 => kvm_core_reg_id(KVM_REG_SIZE_U32, FPSR_OFFSET), // FPSR (32-bit)
+        34 => kvm_core_reg_id(KVM_REG_SIZE_U64, PSTATE_OFFSET), // CPSR/PSTATE
         _ => panic!("invalid GPR index: {}", reg),
     }
 }
@@ -457,7 +457,7 @@ impl VcpuHandle {
     /// Get a SIMD/FP register (Q0-Q31, 128-bit).
     pub fn get_simd_reg(&self, reg: u32) -> SimdReg {
         assert!(reg < 32, "SIMD register index out of range");
-        let id = kvm_core_reg_id(KVM_REG_SIZE_U128 as u64, simd_offset(reg));
+        let id = kvm_core_reg_id(KVM_REG_SIZE_U128, simd_offset(reg));
         let mut bytes = [0u8; 16];
         self.vcpu
             .get_one_reg(id, &mut bytes)
@@ -468,7 +468,7 @@ impl VcpuHandle {
     /// Set a SIMD/FP register (Q0-Q31, 128-bit).
     pub fn set_simd_reg(&self, reg: u32, val: &SimdReg) {
         assert!(reg < 32, "SIMD register index out of range");
-        let id = kvm_core_reg_id(KVM_REG_SIZE_U128 as u64, simd_offset(reg));
+        let id = kvm_core_reg_id(KVM_REG_SIZE_U128, simd_offset(reg));
         self.vcpu
             .set_one_reg(id, &val.0)
             .unwrap_or_else(|e| panic!("KVM set_one_reg(SIMD Q{}) failed: {}", reg, e));
