@@ -91,24 +91,43 @@ fn write_all(fd: i32, buf: &[u8]) {
     let mut off = 0usize;
     while off < buf.len() {
         let n = unsafe {
-            syscall3(__NR_WRITE, fd as u64, buf.as_ptr().add(off) as u64, (buf.len() - off) as u64)
+            syscall3(
+                __NR_WRITE,
+                fd as u64,
+                buf.as_ptr().add(off) as u64,
+                (buf.len() - off) as u64,
+            )
         };
-        if n <= 0 { break; }
+        if n <= 0 {
+            break;
+        }
         off += n as usize;
     }
 }
 
 fn mkdirat(path: &[u8]) {
-    unsafe { syscall3(__NR_MKDIRAT, AT_FDCWD as u64, path.as_ptr() as u64, 0o755); }
+    unsafe {
+        syscall3(__NR_MKDIRAT, AT_FDCWD as u64, path.as_ptr() as u64, 0o755);
+    }
 }
 
 fn mount(src: &[u8], target: &[u8], fstype: &[u8]) {
-    unsafe { syscall5(__NR_MOUNT, src.as_ptr() as u64, target.as_ptr() as u64,
-        fstype.as_ptr() as u64, 0, 0); }
+    unsafe {
+        syscall5(
+            __NR_MOUNT,
+            src.as_ptr() as u64,
+            target.as_ptr() as u64,
+            fstype.as_ptr() as u64,
+            0,
+            0,
+        );
+    }
 }
 
 fn close(fd: i32) {
-    unsafe { syscall1(__NR_CLOSE, fd as u64); }
+    unsafe {
+        syscall1(__NR_CLOSE, fd as u64);
+    }
 }
 
 /// Dup `old_fd` to `new_fd` without O_CLOEXEC (so it survives execve).
@@ -117,45 +136,78 @@ fn close(fd: i32) {
 fn dup_to_fd(old_fd: i32, new_fd: i32) {
     if old_fd == new_fd {
         // Can't dup3 to self — just clear O_CLOEXEC
-        unsafe { syscall3(__NR_FCNTL, old_fd as u64, F_SETFD, 0); }
+        unsafe {
+            syscall3(__NR_FCNTL, old_fd as u64, F_SETFD, 0);
+        }
     } else {
         // dup3 with flags=0 (no O_CLOEXEC) — closes new_fd if open
-        unsafe { syscall3(__NR_DUP3, old_fd as u64, new_fd as u64, 0); }
+        unsafe {
+            syscall3(__NR_DUP3, old_fd as u64, new_fd as u64, 0);
+        }
         close(old_fd);
     }
 }
 
 fn map_shared_fresh() -> *mut u8 {
     let fd = unsafe {
-        syscall3(__NR_OPENAT, AT_FDCWD as u64, b"/dev/mem\0".as_ptr() as u64, 2) // O_RDWR
+        syscall3(
+            __NR_OPENAT,
+            AT_FDCWD as u64,
+            b"/dev/mem\0".as_ptr() as u64,
+            2,
+        ) // O_RDWR
     };
-    if fd < 0 { return core::ptr::null_mut(); }
+    if fd < 0 {
+        return core::ptr::null_mut();
+    }
     let ptr = unsafe {
-        syscall6(__NR_MMAP, 0, SHARED_SIZE as u64, 1 | 2, 1, fd as u64, INBOX_GPA)
+        syscall6(
+            __NR_MMAP,
+            0,
+            SHARED_SIZE as u64,
+            1 | 2,
+            1,
+            fd as u64,
+            INBOX_GPA,
+        )
     };
     close(fd as i32);
-    if ptr < 0 { return core::ptr::null_mut(); }
+    if ptr < 0 {
+        return core::ptr::null_mut();
+    }
     ptr as *mut u8
 }
 
 fn munmap_shared(ptr: *mut u8) {
-    unsafe { syscall2(__NR_MUNMAP, ptr as u64, SHARED_SIZE as u64); }
+    unsafe {
+        syscall2(__NR_MUNMAP, ptr as u64, SHARED_SIZE as u64);
+    }
 }
 
 fn read_inbox_str(shared: *const u8) -> &'static [u8] {
-    if shared.is_null() { return b""; }
+    if shared.is_null() {
+        return b"";
+    }
     let mut len = 0;
     unsafe {
-        while len < INBOX_SIZE && *shared.add(len) != 0 { len += 1; }
+        while len < INBOX_SIZE && *shared.add(len) != 0 {
+            len += 1;
+        }
         core::slice::from_raw_parts(shared, len)
     }
 }
 
 #[allow(dead_code)]
 fn write_outbox(shared: *mut u8, data: &[u8]) {
-    if shared.is_null() || data.is_empty() { return; }
+    if shared.is_null() || data.is_empty() {
+        return;
+    }
     let outbox = unsafe { shared.add(INBOX_SIZE) };
-    let len = if data.len() < OUTBOX_SIZE { data.len() } else { OUTBOX_SIZE - 1 };
+    let len = if data.len() < OUTBOX_SIZE {
+        data.len()
+    } else {
+        OUTBOX_SIZE - 1
+    };
     unsafe {
         core::ptr::copy_nonoverlapping(data.as_ptr(), outbox, len);
         *outbox.add(len) = 0; // null-terminate
@@ -163,7 +215,9 @@ fn write_outbox(shared: *mut u8, data: &[u8]) {
 }
 
 fn power_off() -> ! {
-    unsafe { syscall3(__NR_REBOOT, 0xfee1dead, 0x28121969, 0x4321fedc); }
+    unsafe {
+        syscall3(__NR_REBOOT, 0xfee1dead, 0x28121969, 0x4321fedc);
+    }
     loop {}
 }
 
@@ -177,8 +231,12 @@ pub extern "C" fn _start() -> ! {
 
     // Open /dev/kmsg for output (O_WRONLY | O_CLOEXEC to prevent leaking to runner)
     let kmsg_fd = unsafe {
-        syscall3(__NR_OPENAT, AT_FDCWD as u64, b"/dev/kmsg\0".as_ptr() as u64,
-            1 | O_CLOEXEC) // O_WRONLY | O_CLOEXEC
+        syscall3(
+            __NR_OPENAT,
+            AT_FDCWD as u64,
+            b"/dev/kmsg\0".as_ptr() as u64,
+            1 | O_CLOEXEC,
+        ) // O_WRONLY | O_CLOEXEC
     };
     let out_fd = if kmsg_fd >= 0 { kmsg_fd as i32 } else { 1 };
 
@@ -189,15 +247,10 @@ pub extern "C" fn _start() -> ! {
     let mut js_pipe = [0i32; 2];
     let mut ready_pipe = [0i32; 2];
     let mut output_pipe = [0i32; 2];
-    let js_pipe_ret = unsafe {
-        syscall2(__NR_PIPE2, js_pipe.as_mut_ptr() as u64, O_CLOEXEC)
-    };
-    let ready_pipe_ret = unsafe {
-        syscall2(__NR_PIPE2, ready_pipe.as_mut_ptr() as u64, O_CLOEXEC)
-    };
-    let output_pipe_ret = unsafe {
-        syscall2(__NR_PIPE2, output_pipe.as_mut_ptr() as u64, O_CLOEXEC)
-    };
+    let js_pipe_ret = unsafe { syscall2(__NR_PIPE2, js_pipe.as_mut_ptr() as u64, O_CLOEXEC) };
+    let ready_pipe_ret = unsafe { syscall2(__NR_PIPE2, ready_pipe.as_mut_ptr() as u64, O_CLOEXEC) };
+    let output_pipe_ret =
+        unsafe { syscall2(__NR_PIPE2, output_pipe.as_mut_ptr() as u64, O_CLOEXEC) };
 
     let mut runner_pipe_write: i32 = -1;
     let mut ready_pipe_read: i32 = -1;
@@ -210,9 +263,9 @@ pub extern "C" fn _start() -> ! {
         if child_pid == 0 {
             // --- CHILD PROCESS ---
             // Close parent-side ends
-            close(js_pipe[1]);      // JS pipe write end
-            close(ready_pipe[0]);   // ready pipe read end
-            close(output_pipe[0]);  // output pipe read end
+            close(js_pipe[1]); // JS pipe write end
+            close(ready_pipe[0]); // ready pipe read end
+            close(output_pipe[0]); // output pipe read end
 
             // Dup JS pipe read → fd 0 (stdin), without O_CLOEXEC
             dup_to_fd(js_pipe[0], 0);
@@ -227,17 +280,23 @@ pub extern "C" fn _start() -> ! {
             let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
             let envp: [*const u8; 1] = [core::ptr::null()];
             unsafe {
-                syscall3(__NR_EXECVE, path.as_ptr() as u64,
-                    argv.as_ptr() as u64, envp.as_ptr() as u64);
+                syscall3(
+                    __NR_EXECVE,
+                    path.as_ptr() as u64,
+                    argv.as_ptr() as u64,
+                    envp.as_ptr() as u64,
+                );
             }
             // execve failed — exit child
-            unsafe { syscall1(__NR_EXIT, 1); }
+            unsafe {
+                syscall1(__NR_EXIT, 1);
+            }
             loop {}
         } else if child_pid > 0 {
             // --- PARENT PROCESS ---
-            close(js_pipe[0]);      // JS pipe read end (child has it)
-            close(ready_pipe[1]);   // ready pipe write end (child has it)
-            close(output_pipe[1]);  // output pipe write end (child has it)
+            close(js_pipe[0]); // JS pipe read end (child has it)
+            close(ready_pipe[1]); // ready pipe write end (child has it)
+            close(output_pipe[1]); // output pipe write end (child has it)
             runner_pipe_write = js_pipe[1];
             ready_pipe_read = ready_pipe[0];
             output_pipe_read = output_pipe[0];
@@ -253,31 +312,53 @@ pub extern "C" fn _start() -> ! {
         }
     } else {
         // pipe creation failed — clean up any that succeeded
-        if js_pipe_ret >= 0 { close(js_pipe[0]); close(js_pipe[1]); }
-        if ready_pipe_ret >= 0 { close(ready_pipe[0]); close(ready_pipe[1]); }
-        if output_pipe_ret >= 0 { close(output_pipe[0]); close(output_pipe[1]); }
+        if js_pipe_ret >= 0 {
+            close(js_pipe[0]);
+            close(js_pipe[1]);
+        }
+        if ready_pipe_ret >= 0 {
+            close(ready_pipe[0]);
+            close(ready_pipe[1]);
+        }
+        if output_pipe_ret >= 0 {
+            close(output_pipe[0]);
+            close(output_pipe[1]);
+        }
     }
 
     // Wait for runner to signal readiness (if we have a runner)
     if ready_pipe_read >= 0 {
-        write_all(out_fd, b"[convex-init] waiting for runner to initialize...\n");
+        write_all(
+            out_fd,
+            b"[convex-init] waiting for runner to initialize...\n",
+        );
         let mut ready_byte = [0u8; 1];
         let n = unsafe {
-            syscall3(__NR_READ, ready_pipe_read as u64,
-                ready_byte.as_mut_ptr() as u64, 1)
+            syscall3(
+                __NR_READ,
+                ready_pipe_read as u64,
+                ready_byte.as_mut_ptr() as u64,
+                1,
+            )
         };
         close(ready_pipe_read);
         if n > 0 {
             write_all(out_fd, b"[convex-init] runner signaled ready\n");
         } else {
-            write_all(out_fd, b"[convex-init] runner exited without signaling ready\n");
+            write_all(
+                out_fd,
+                b"[convex-init] runner exited without signaling ready\n",
+            );
         }
     }
 
     // Map shared region (inbox + outbox), write READY to inbox, spin
     let shared = map_shared_fresh();
     if shared.is_null() {
-        write_all(out_fd, b"[convex-init] ERROR: failed to map shared region\n");
+        write_all(
+            out_fd,
+            b"[convex-init] ERROR: failed to map shared region\n",
+        );
         power_off();
     }
 
@@ -291,13 +372,23 @@ pub extern "C" fn _start() -> ! {
     // Compare first 8 bytes ("CONVEX_R") to avoid false positives if
     // JS happens to start with a matching prefix.
     let ready_tag = u64::from_ne_bytes([
-        READY_MAGIC[0], READY_MAGIC[1], READY_MAGIC[2], READY_MAGIC[3],
-        READY_MAGIC[4], READY_MAGIC[5], READY_MAGIC[6], READY_MAGIC[7],
+        READY_MAGIC[0],
+        READY_MAGIC[1],
+        READY_MAGIC[2],
+        READY_MAGIC[3],
+        READY_MAGIC[4],
+        READY_MAGIC[5],
+        READY_MAGIC[6],
+        READY_MAGIC[7],
     ]);
     loop {
         let tag = unsafe { core::ptr::read_volatile(shared as *const u64) };
-        if tag != ready_tag { break; }
-        unsafe { core::arch::asm!("isb"); }
+        if tag != ready_tag {
+            break;
+        }
+        unsafe {
+            core::arch::asm!("isb");
+        }
     }
 
     // --- We are now in a forked VM ---
@@ -328,10 +419,16 @@ pub extern "C" fn _start() -> ! {
             let max_output = OUTBOX_SIZE - 32; // leave room for error/truncation suffix
             loop {
                 let n = unsafe {
-                    syscall3(__NR_READ, output_pipe_read as u64,
-                        buf.as_mut_ptr() as u64, buf.len() as u64)
+                    syscall3(
+                        __NR_READ,
+                        output_pipe_read as u64,
+                        buf.as_mut_ptr() as u64,
+                        buf.len() as u64,
+                    )
                 };
-                if n <= 0 { break; } // EOF (runner exited) or error
+                if n <= 0 {
+                    break;
+                } // EOF (runner exited) or error
                 let n = n as usize;
                 let remaining = if max_output > total_written {
                     max_output - total_written
@@ -342,7 +439,10 @@ pub extern "C" fn _start() -> ! {
                 if to_copy > 0 {
                     unsafe {
                         core::ptr::copy_nonoverlapping(
-                            buf.as_ptr(), outbox.add(total_written), to_copy);
+                            buf.as_ptr(),
+                            outbox.add(total_written),
+                            to_copy,
+                        );
                     }
                     total_written += to_copy;
                 }
@@ -357,8 +457,13 @@ pub extern "C" fn _start() -> ! {
         // Wait for runner child to exit (it already closed stdout → pipe EOF above)
         let mut status: i32 = 0;
         unsafe {
-            syscall4(__NR_WAIT4, (-1i64) as u64,
-                &mut status as *mut i32 as u64, 0, 0);
+            syscall4(
+                __NR_WAIT4,
+                (-1i64) as u64,
+                &mut status as *mut i32 as u64,
+                0,
+                0,
+            );
         }
 
         // Append status/truncation info to outbox
@@ -378,8 +483,10 @@ pub extern "C" fn _start() -> ! {
         if !exited_normally || exit_code != 0 {
             // Append error to outbox
             let code_byte = b'0' + (exit_code as u8 % 10); // simple single-digit
-            let err = [b'\n', b'[', b'r', b'u', b'n', b'n', b'e', b'r', b' ',
-                       b'e', b'x', b'i', b't', b' ', code_byte, b']', b'\n'];
+            let err = [
+                b'\n', b'[', b'r', b'u', b'n', b'n', b'e', b'r', b' ', b'e', b'x', b'i', b't',
+                b' ', code_byte, b']', b'\n',
+            ];
             let space = OUTBOX_SIZE - total_written - 1;
             let len = if err.len() < space { err.len() } else { space };
             unsafe {
@@ -389,13 +496,19 @@ pub extern "C" fn _start() -> ! {
         }
         // Null-terminate outbox
         if total_written < OUTBOX_SIZE {
-            unsafe { *outbox.add(total_written) = 0; }
+            unsafe {
+                *outbox.add(total_written) = 0;
+            }
         }
     } else {
         // No runner — print inbox text directly to outbox
         let outbox = unsafe { fresh_shared.add(INBOX_SIZE) };
         if !msg.is_empty() && msg != READY_MAGIC {
-            let len = if msg.len() < OUTBOX_SIZE - 1 { msg.len() } else { OUTBOX_SIZE - 1 };
+            let len = if msg.len() < OUTBOX_SIZE - 1 {
+                msg.len()
+            } else {
+                OUTBOX_SIZE - 1
+            };
             unsafe {
                 core::ptr::copy_nonoverlapping(msg.as_ptr(), outbox, len);
                 *outbox.add(len) = 0;

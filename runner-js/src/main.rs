@@ -21,10 +21,8 @@ fn main() {
 
     // Initialize Boa engine
     let mut ctx = Context::default();
-    boa_runtime::Console::register_with_logger(
-        boa_runtime::DefaultLogger,
-        &mut ctx,
-    ).expect("register console");
+    boa_runtime::Console::register_with_logger(boa_runtime::DefaultLogger, &mut ctx)
+        .expect("register console");
 
     // Signal init that Boa is ready via ready pipe (fd 3).
     // Init blocks on this before writing READY to the mailbox.

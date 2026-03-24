@@ -140,15 +140,23 @@ fn console_log_callback(
 
 #[allow(dead_code)]
 fn mount_if_needed(source: &str, target: &str, fstype: &str) {
-    if target == "/dev" && std::path::Path::new("/dev/null").exists() { return; }
-    if target == "/proc" && std::path::Path::new("/proc/self").exists() { return; }
+    if target == "/dev" && std::path::Path::new("/dev/null").exists() {
+        return;
+    }
+    if target == "/proc" && std::path::Path::new("/proc/self").exists() {
+        return;
+    }
     let _ = std::fs::create_dir_all(target);
     let src = CString::new(source).unwrap();
     let tgt = CString::new(target).unwrap();
     let fst = CString::new(fstype).unwrap();
     unsafe {
-        libc::mount(src.as_ptr(), tgt.as_ptr(), fst.as_ptr(), 0,
-            std::ptr::null::<libc::c_void>());
+        libc::mount(
+            src.as_ptr(),
+            tgt.as_ptr(),
+            fst.as_ptr(),
+            0,
+            std::ptr::null::<libc::c_void>(),
+        );
     }
 }
-

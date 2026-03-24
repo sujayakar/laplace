@@ -1,5 +1,4 @@
 /// Minimal FFI bindings to QuickJS for evaluating JS code.
-
 use core::ffi::{c_char, c_int, c_void};
 
 // QuickJS value is a 128-bit struct (union + tag) on 64-bit platforms
@@ -80,11 +79,7 @@ extern "C" {
 }
 
 /// Wrapper for JS_ToCStringLen2 (matches the static inline JS_ToCStringLen)
-unsafe fn js_to_cstring_len(
-    ctx: *mut JSContext,
-    plen: *mut usize,
-    val: JSValue,
-) -> *const c_char {
+unsafe fn js_to_cstring_len(ctx: *mut JSContext, plen: *mut usize, val: JSValue) -> *const c_char {
     JS_ToCStringLen2(ctx, plen, val, false)
 }
 
@@ -96,9 +91,7 @@ fn js_is_exception(val: JSValue) -> bool {
 /// Wrapper for JS_NewCFunction2 (matches the static inline JS_NewCFunction)
 unsafe fn js_new_cfunction(
     ctx: *mut JSContext,
-    func: Option<
-        unsafe extern "C" fn(*mut JSContext, JSValue, c_int, *const JSValue) -> JSValue,
-    >,
+    func: Option<unsafe extern "C" fn(*mut JSContext, JSValue, c_int, *const JSValue) -> JSValue>,
     name: *const c_char,
     length: c_int,
 ) -> JSValue {
@@ -187,12 +180,7 @@ fn install_console(ctx: *mut JSContext) {
         );
         JS_SetPropertyStr(ctx, console, b"log\0".as_ptr() as *const c_char, log_fn);
 
-        JS_SetPropertyStr(
-            ctx,
-            global,
-            b"console\0".as_ptr() as *const c_char,
-            console,
-        );
+        JS_SetPropertyStr(ctx, global, b"console\0".as_ptr() as *const c_char, console);
         JS_FreeValue(ctx, global);
     }
 }
@@ -209,14 +197,20 @@ unsafe extern "C" fn js_db_query(
 
     if argc < 1 {
         super::console_write("db.query: missing collection argument\n");
-        return JSValue { u: 0, tag: JS_TAG_UNDEFINED };
+        return JSValue {
+            u: 0,
+            tag: JS_TAG_UNDEFINED,
+        };
     }
 
     // Get the collection name string
     let mut len: usize = 0;
     let str_ptr = js_to_cstring_len(ctx, &mut len, *argv.add(0));
     if str_ptr.is_null() {
-        return JSValue { u: 0, tag: JS_TAG_UNDEFINED };
+        return JSValue {
+            u: 0,
+            tag: JS_TAG_UNDEFINED,
+        };
     }
 
     // Write collection name to mailbox
@@ -224,7 +218,10 @@ unsafe extern "C" fn js_db_query(
     if len >= MAILBOX_SIZE {
         JS_FreeCString(ctx, str_ptr);
         super::console_write("db.query: collection name too long\n");
-        return JSValue { u: 0, tag: JS_TAG_UNDEFINED };
+        return JSValue {
+            u: 0,
+            tag: JS_TAG_UNDEFINED,
+        };
     }
     core::ptr::copy_nonoverlapping(str_ptr as *const u8, mailbox, len);
     *mailbox.add(len) = 0; // null-terminate
@@ -275,12 +272,7 @@ fn install_deterministic_builtins(ctx: *mut JSContext) {
             b"random\0".as_ptr() as *const c_char,
             0,
         );
-        JS_SetPropertyStr(
-            ctx,
-            math,
-            b"random\0".as_ptr() as *const c_char,
-            random_fn,
-        );
+        JS_SetPropertyStr(ctx, math, b"random\0".as_ptr() as *const c_char, random_fn);
         JS_FreeValue(ctx, math);
 
         // Install db.query
@@ -292,12 +284,7 @@ fn install_deterministic_builtins(ctx: *mut JSContext) {
             1,
         );
         JS_SetPropertyStr(ctx, db, b"query\0".as_ptr() as *const c_char, query_fn);
-        JS_SetPropertyStr(
-            ctx,
-            global,
-            b"db\0".as_ptr() as *const c_char,
-            db,
-        );
+        JS_SetPropertyStr(ctx, global, b"db\0".as_ptr() as *const c_char, db);
 
         JS_FreeValue(ctx, global);
     }

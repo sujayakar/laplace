@@ -5,8 +5,8 @@ extern crate alloc;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
-use core::panic::PanicInfo;
 use core::cell::UnsafeCell;
+use core::panic::PanicInfo;
 
 use convex_shared::{HC_CONSOLE, HC_EXIT, HC_READY, HC_TIME};
 use convex_shared::{HEAP_GPA, HEAP_SIZE, MAILBOX_GPA, MAILBOX_SIZE};
@@ -53,7 +53,9 @@ pub extern "C" fn _guest_console_write(ptr: *const u8, len: usize) {
 #[unsafe(no_mangle)]
 pub extern "C" fn _guest_abort() -> ! {
     console_write("ABORT in guest!\n");
-    unsafe { hypercall(HC_EXIT, 1, 0, 0); }
+    unsafe {
+        hypercall(HC_EXIT, 1, 0, 0);
+    }
     loop {}
 }
 
@@ -139,7 +141,11 @@ pub unsafe extern "C" fn realloc(ptr: *mut u8, new_size: usize) -> *mut u8 {
     let old_size = *(ptr.sub(MALLOC_HEADER_SIZE) as *const usize);
     let new_ptr = malloc(new_size);
     if !new_ptr.is_null() {
-        let copy_size = if old_size < new_size { old_size } else { new_size };
+        let copy_size = if old_size < new_size {
+            old_size
+        } else {
+            new_size
+        };
         core::ptr::copy_nonoverlapping(ptr, new_ptr, copy_size);
     }
     // old memory is not freed (bump allocator)
@@ -208,14 +214,18 @@ libm_export!(rint, libm::rint, (x: f64) -> f64);
 #[unsafe(no_mangle)]
 pub extern "C" fn frexp(x: f64, exp: *mut i32) -> f64 {
     let (frac, e) = libm::frexp(x);
-    unsafe { *exp = e; }
+    unsafe {
+        *exp = e;
+    }
     frac
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn modf(x: f64, iptr: *mut f64) -> f64 {
     let (frac, int_part) = libm::modf(x);
-    unsafe { *iptr = int_part; }
+    unsafe {
+        *iptr = int_part;
+    }
     frac
 }
 
@@ -236,27 +246,31 @@ pub extern "C" fn guest_main() -> ! {
     console_write("Guest initializing (QuickJS)...\n");
 
     // Signal snapshot point
-    unsafe { hypercall(HC_READY, 0, 0, 0); }
+    unsafe {
+        hypercall(HC_READY, 0, 0, 0);
+    }
 
     // --- Execution resumes here after fork ---
     // Read JS code from mailbox
-    let mailbox = unsafe {
-        core::slice::from_raw_parts(MAILBOX_GPA as *const u8, MAILBOX_SIZE)
-    };
+    let mailbox = unsafe { core::slice::from_raw_parts(MAILBOX_GPA as *const u8, MAILBOX_SIZE) };
     // Find null terminator
     let js_len = mailbox.iter().position(|&b| b == 0).unwrap_or(MAILBOX_SIZE);
     let js_code = &mailbox[..js_len];
 
     if js_len == 0 {
         console_write("No JS code in mailbox.\n");
-        unsafe { hypercall(HC_EXIT, 0, 0, 0); }
+        unsafe {
+            hypercall(HC_EXIT, 0, 0, 0);
+        }
         loop {}
     }
 
     // Run JS via QuickJS
     let exit_code = quickjs_ffi::eval_js(js_code);
 
-    unsafe { hypercall(HC_EXIT, exit_code, 0, 0); }
+    unsafe {
+        hypercall(HC_EXIT, exit_code, 0, 0);
+    }
     loop {}
 }
 
@@ -272,7 +286,7 @@ core::arch::global_asm!(
     "mrs x1, esr_el1",
     "mrs x2, far_el1",
     "mrs x3, elr_el1",
-    "mov x0, #0xDE",    // HC_EXCEPTION (debug)
+    "mov x0, #0xDE", // HC_EXCEPTION (debug)
     "hvc #0",
     "b .",
     ".balign 0x80",
@@ -290,7 +304,7 @@ core::arch::global_asm!(
     "mrs x1, esr_el1",
     "mrs x2, far_el1",
     "mrs x3, elr_el1",
-    "mov x0, #0xDE",    // HC_EXCEPTION (debug)
+    "mov x0, #0xDE", // HC_EXCEPTION (debug)
     "hvc #0",
     "b .",
     ".balign 0x80",
@@ -329,6 +343,8 @@ pub unsafe extern "C" fn _start() -> ! {
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     console_write("PANIC: guest panicked\n");
-    unsafe { hypercall(HC_EXIT, 1, 0, 0); }
+    unsafe {
+        hypercall(HC_EXIT, 1, 0, 0);
+    }
     loop {}
 }
